@@ -1,12 +1,12 @@
 $ErrorActionPreference = "Stop"
 
-$INSTANCE_IP = "13.233.95.10"
-$SSH_KEY = "$HOME\Downloads\ubuntu-keypair.pem"
+$INSTANCE_IP = "3.109.183.169"
+$SSH_KEY = "ubuntu-keypair-prod.pem"
 $ECR_REGISTRY = "973370772689.dkr.ecr.ap-south-1.amazonaws.com"
 $AWS_REGION = "ap-south-1"
 
 Write-Host "=== OpenAlgo Lightsail Deployment Script ===" -ForegroundColor Cyan
-Write-Host "Instance: dev-ubuntu @ $INSTANCE_IP (Ubuntu 24.04, NVMe disk)"
+Write-Host "Instance: ubuntu-prod @ $INSTANCE_IP (Ubuntu 24.04, NVMe disk)"
 Write-Host ""
 
 $AWS_ACCESS_KEY = (aws configure get aws_access_key_id).Trim()

@@ -86,3 +86,7 @@ yarn-error.log*
 
 # Windows NUL file
 nul
+
+# Secrets
+*.env
+*.pem
