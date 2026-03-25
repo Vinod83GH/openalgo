@@ -78,6 +78,8 @@ services:
     image: ${ECR_REGISTRY}/openalgo/nginx:latest
     container_name: openalgo-nginx
     network_mode: host
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
     depends_on:
       openalgo:
         condition: service_healthy
