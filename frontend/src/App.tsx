@@ -95,6 +95,7 @@ const Leverage = lazy(() => import('@/pages/Leverage'))
 const AdminIndex = lazy(() => import('@/pages/admin/AdminIndex'))
 const FreezeQty = lazy(() => import('@/pages/admin/FreezeQty'))
 const Holidays = lazy(() => import('@/pages/admin/Holidays'))
+const KillSwitch = lazy(() => import('@/pages/admin/KillSwitch'))
 const MarketTimings = lazy(() => import('@/pages/admin/MarketTimings'))
 
 // Telegram pages
@@ -199,6 +200,7 @@ function App() {
                 <Route path="/admin" element={<AdminIndex />} />
                 <Route path="/admin/freeze" element={<FreezeQty />} />
                 <Route path="/admin/holidays" element={<Holidays />} />
+                <Route path="/admin/kill-switch" element={<KillSwitch />} />
                 <Route path="/admin/timings" element={<MarketTimings />} />
                 {/* Phase 7: Telegram */}
                 <Route path="/telegram" element={<TelegramIndex />} />
