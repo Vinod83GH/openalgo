@@ -128,6 +128,7 @@ from blueprints.brlogin import brlogin_bp
 from blueprints.broker_credentials import (
     broker_credentials_bp,  # Import the broker credentials blueprint
 )
+from blueprints.kill_switch import kill_switch_bp  # Import the kill switch blueprint
 from blueprints.chartink import chartink_bp  # Import the chartink blueprint
 from blueprints.core import core_bp
 from blueprints.dashboard import dashboard_bp
@@ -180,6 +181,7 @@ from database.apilog_db import init_db as ensure_api_log_tables_exists
 from database.auth_db import init_db as ensure_auth_tables_exists
 from database.chartink_db import init_db as ensure_chartink_tables_exists
 from database.flow_db import init_db as ensure_flow_tables_exists
+from database.kill_switch_db import init_db as kill_switch_init_db
 from database.historify_db import init_database as ensure_historify_tables_exists
 from database.latency_db import init_latency_db as ensure_latency_tables_exists
 from database.leverage_db import init_db as ensure_leverage_tables_exists
@@ -194,6 +196,7 @@ from extensions import socketio  # Import SocketIO
 from limiter import limiter  # Import the Limiter instance
 from restx_api import api, api_v1_bp
 from services.telegram_bot_service import telegram_bot_service
+from services.pnl_monitor import PnLMonitor  # Import PnL monitor for kill switch
 from utils.latency_monitor import init_latency_monitoring  # Import latency monitoring
 from utils.health_monitor import init_health_monitoring  # Import health monitoring
 from utils.logging import (  # Import centralized logging
@@ -364,6 +367,7 @@ def create_app():
     app.register_blueprint(flow_bp)  # Register Flow blueprint
     app.register_blueprint(broker_credentials_bp)  # Register Broker credentials blueprint
     app.register_blueprint(system_permissions_bp)  # Register System permissions blueprint
+    app.register_blueprint(kill_switch_bp)  # Register Kill Switch blueprint
 
     # Exempt webhook endpoints from CSRF protection after app initialization
     with app.app_context():
@@ -589,6 +593,7 @@ def setup_environment(app):
                 ("Historify DB", ensure_historify_tables_exists),
                 ("Flow DB", ensure_flow_tables_exists),
                 ("Leverage DB", ensure_leverage_tables_exists),
+                ("Kill Switch DB", kill_switch_init_db),
             ]
 
             db_init_start = time.time()
@@ -606,6 +611,14 @@ def setup_environment(app):
 
             # Signal that DB tables are ready (unblocks cache restoration)
             app.db_ready.set()
+
+            # Start PnL monitor daemon thread (after DB is ready so it can query tables)
+            try:
+                pnl_monitor = PnLMonitor()
+                pnl_monitor.start()
+                logger.debug("PnL monitor thread started")
+            except Exception as e:
+                logger.error(f"Failed to start PnL monitor: {e}")
 
             # Initialize schedulers AFTER database initialization
             try:
