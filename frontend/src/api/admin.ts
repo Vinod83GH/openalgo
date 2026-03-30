@@ -5,9 +5,11 @@ import type {
   FreezeQty,
   Holiday,
   HolidaysResponse,
+  KillSwitchStatus,
   TimingsResponse,
   TodayTiming,
   UpdateFreezeQtyRequest,
+  UpdateKillSwitchConfigRequest,
   UpdateTimingRequest,
 } from '@/types/admin'
 import { webClient } from './client'
@@ -151,5 +153,33 @@ export const adminApi = {
       { date }
     )
     return { date: response.data.date, timings: response.data.timings }
+  },
+
+  // ============================================================================
+  // Kill Switch APIs
+  // ============================================================================
+
+  /**
+   * Get kill switch status and config for the active broker
+   */
+  getKillSwitchStatus: async (): Promise<KillSwitchStatus> => {
+    const response = await webClient.get<ApiResponse<KillSwitchStatus>>('/admin/api/kill-switch')
+    return response.data.data!
+  },
+
+  /**
+   * Update kill switch config (enabled flag and P&L thresholds)
+   */
+  updateKillSwitchConfig: async (data: UpdateKillSwitchConfigRequest): Promise<ApiResponse> => {
+    const response = await webClient.post<ApiResponse>('/admin/api/kill-switch/config', data)
+    return response.data
+  },
+
+  /**
+   * Manually activate the broker kill switch
+   */
+  activateKillSwitch: async (): Promise<ApiResponse> => {
+    const response = await webClient.post<ApiResponse>('/admin/api/kill-switch/activate')
+    return response.data
   },
 }
