@@ -19,7 +19,7 @@ WORKDIR /app
 COPY frontend/package*.json ./frontend/
 RUN cd frontend && npm install
 COPY frontend/ ./frontend/
-RUN cd frontend && npm run build
+RUN cd frontend && NODE_OPTIONS=--max-old-space-size=1536 npm run build
 
 # --------------------------------------------------------------------------- #
 # ------------------------------ Production Stage --------------------------- #

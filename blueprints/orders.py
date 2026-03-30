@@ -16,6 +16,7 @@ from services.positionbook_service import get_positionbook
 from services.tradebook_service import get_tradebook
 from utils.logging import get_logger
 from utils.session import check_session_validity
+from blueprints.kill_switch import check_kill_switch_active
 
 logger = get_logger(__name__)
 
@@ -525,6 +526,16 @@ def close_position():
         auth_token = get_auth_token(login_username)
         broker_name = session.get("broker")
 
+        # Kill switch check
+        if broker_name:
+            is_blocked, error_response = check_kill_switch_active(broker_name)
+            if is_blocked:
+                logger.warning(
+                    f"Kill switch blocked close_position: symbol={symbol}, "
+                    f"action=close, quantity=0, broker={broker_name}"
+                )
+                return jsonify(error_response), 403
+
         # Check if in analyze mode
         if get_analyze_mode():
             # In analyze mode, use placesmartorder service with quantity=0 and position_size=0
@@ -659,6 +670,14 @@ def close_all_positions():
         if not auth_token or not broker_name:
             return jsonify({"status": "error", "message": "Authentication error"}), 401
 
+        # Kill switch check
+        is_blocked, error_response = check_kill_switch_active(broker_name)
+        if is_blocked:
+            logger.warning(
+                f"Kill switch blocked close_all_positions: broker={broker_name}"
+            )
+            return jsonify(error_response), 403
+
         # Import necessary functions
         from database.auth_db import get_api_key_for_tradingview
         from database.settings_db import get_analyze_mode
@@ -703,6 +722,14 @@ def cancel_all_orders_ui():
 
         if not auth_token or not broker_name:
             return jsonify({"status": "error", "message": "Authentication error"}), 401
+
+        # Kill switch check
+        is_blocked, error_response = check_kill_switch_active(broker_name)
+        if is_blocked:
+            logger.warning(
+                f"Kill switch blocked cancel_all_orders: broker={broker_name}"
+            )
+            return jsonify(error_response), 403
 
         # Import necessary functions
         from database.auth_db import get_api_key_for_tradingview
@@ -767,6 +794,14 @@ def cancel_order_ui():
         if not orderid:
             return jsonify({"status": "error", "message": "Order ID is required"}), 400
 
+        # Kill switch check
+        is_blocked, error_response = check_kill_switch_active(broker_name)
+        if is_blocked:
+            logger.warning(
+                f"Kill switch blocked cancel_order: orderid={orderid}, broker={broker_name}"
+            )
+            return jsonify(error_response), 403
+
         # Import necessary functions
         from database.auth_db import get_api_key_for_tradingview
         from database.settings_db import get_analyze_mode
@@ -809,6 +844,15 @@ def modify_order_ui():
 
         if not orderid:
             return jsonify({"status": "error", "message": "Order ID is required"}), 400
+
+        # Kill switch check
+        is_blocked, error_response = check_kill_switch_active(broker_name)
+        if is_blocked:
+            logger.warning(
+                f"Kill switch blocked modify_order: symbol={data.get('symbol')}, "
+                f"action={data.get('action')}, quantity={data.get('quantity')}, broker={broker_name}"
+            )
+            return jsonify(error_response), 403
 
         # Import necessary functions
         from database.auth_db import get_api_key_for_tradingview
@@ -900,6 +944,16 @@ def action_center():
 def approve_pending_order_route(order_id):
     """Approve a pending order and execute it"""
     login_username = session["user"]
+    broker_name = session.get("broker")
+
+    # Kill switch check
+    if broker_name:
+        is_blocked, error_response = check_kill_switch_active(broker_name)
+        if is_blocked:
+            logger.warning(
+                f"Kill switch blocked approve_pending_order: order_id={order_id}, broker={broker_name}"
+            )
+            return jsonify(error_response), 403
 
     from database.action_center_db import approve_pending_order
     from extensions import socketio
@@ -1007,6 +1061,16 @@ def action_center_count():
 def approve_all_pending_orders():
     """Approve and execute all pending orders"""
     login_username = session["user"]
+    broker_name = session.get("broker")
+
+    # Kill switch check
+    if broker_name:
+        is_blocked, error_response = check_kill_switch_active(broker_name)
+        if is_blocked:
+            logger.warning(
+                f"Kill switch blocked approve_all_pending_orders: broker={broker_name}"
+            )
+            return jsonify(error_response), 403
 
     from database.action_center_db import approve_pending_order, get_pending_orders
     from extensions import socketio
