@@ -52,7 +52,7 @@ def get_kill_switch_status(access_token: str) -> str:
 
     kill_switch_status = data.get("killSwitchStatus", "DEACTIVATE")
     # Dhan returns "ACTIVATE" or "DEACTIVATE" — normalise to ACTIVATED/DEACTIVATED
-    return "ACTIVATED" if kill_switch_status in ("ACTIVATE", "ACTIVATED") else "DEACTIVATED"
+    return "ACTIVATED" if kill_switch_status in ("ACTIVE") else "DEACTIVATED"
 
 
 def activate_kill_switch(access_token: str) -> dict:
