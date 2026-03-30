@@ -160,7 +160,7 @@ export const adminApi = {
   // ============================================================================
 
   /**
-   * Get kill switch status and config
+   * Get kill switch status and config for the active broker
    */
   getKillSwitchStatus: async (): Promise<KillSwitchStatus> => {
     const response = await webClient.get<ApiResponse<KillSwitchStatus>>('/admin/api/kill-switch')
@@ -168,7 +168,7 @@ export const adminApi = {
   },
 
   /**
-   * Update kill switch config (enabled, thresholds)
+   * Update kill switch config (enabled flag and P&L thresholds)
    */
   updateKillSwitchConfig: async (data: UpdateKillSwitchConfigRequest): Promise<ApiResponse> => {
     const response = await webClient.post<ApiResponse>('/admin/api/kill-switch/config', data)
@@ -176,7 +176,7 @@ export const adminApi = {
   },
 
   /**
-   * Manually activate the kill switch
+   * Manually activate the broker kill switch
    */
   activateKillSwitch: async (): Promise<ApiResponse> => {
     const response = await webClient.post<ApiResponse>('/admin/api/kill-switch/activate')
