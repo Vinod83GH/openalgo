@@ -1,10 +1,20 @@
 import json
+import os
 
 from broker.dhan.api.baseurl import get_url
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _get_dhan_client_id() -> str | None:
+    """Extract dhanClientId from BROKER_API_KEY (format: client_id:::api_key)."""
+    broker_api_key = os.getenv("BROKER_API_KEY", "")
+    if ":::" in broker_api_key:
+        client_id, _ = broker_api_key.split(":::", 1)
+        return client_id
+    return None
 
 DHAN_BASE_URL = "https://api.dhan.co/v2"
 
@@ -62,10 +72,15 @@ def set_pnl_exit(access_token: str, profit_threshold: float, loss_threshold: flo
     url = get_url("/v2/pnlExit")
     headers = _get_headers(access_token, include_content_type=True)
 
-    payload = json.dumps({
+    client_id = _get_dhan_client_id()
+    payload_dict = {
         "profitThreshold": profit_threshold,
         "lossThreshold": loss_threshold,
-    })
+    }
+    if client_id:
+        payload_dict["dhanClientId"] = client_id
+
+    payload = json.dumps(payload_dict)
 
     response = client.post(url, headers=headers, content=payload)
     _raise_for_status(response)
