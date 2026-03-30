@@ -31,10 +31,9 @@ export default function KillSwitch() {
     try {
       const data = await adminApi.getKillSwitchStatus()
       setStatus(data)
-      if (!silent) {
-        setProfitThreshold(String(data.profit_threshold))
-        setLossThreshold(String(data.loss_threshold))
-      }
+      // Always sync threshold inputs with latest server values
+      setProfitThreshold(String(data.profit_threshold))
+      setLossThreshold(String(data.loss_threshold))
     } catch {
       showToast.error('Failed to load kill switch status', 'admin')
     } finally {
@@ -74,6 +73,12 @@ export default function KillSwitch() {
       })
       if (response.status === 'success') {
         showToast.success(response.message || 'Thresholds saved', 'admin')
+        // Optimistically update local state
+        setStatus((prev) => prev ? {
+          ...prev,
+          profit_threshold: parseFloat(profitThreshold),
+          loss_threshold: parseFloat(lossThreshold),
+        } : prev)
         fetchStatus(true)
       } else {
         showToast.error(response.message || 'Failed to save thresholds', 'admin')
@@ -88,6 +93,8 @@ export default function KillSwitch() {
 
   const handleToggleEnabled = async (enabled: boolean) => {
     if (!status) return
+    // Optimistically update toggle immediately
+    setStatus((prev) => (prev ? { ...prev, enabled } : prev))
     setIsTogglingEnabled(true)
     try {
       const response = await adminApi.updateKillSwitchConfig({
@@ -97,11 +104,15 @@ export default function KillSwitch() {
       })
       if (response.status === 'success') {
         showToast.success(enabled ? 'Kill switch enabled' : 'Kill switch disabled', 'admin')
-        setStatus((prev) => (prev ? { ...prev, enabled } : prev))
+        fetchStatus(true)
       } else {
+        // Revert on failure
+        setStatus((prev) => (prev ? { ...prev, enabled: !enabled } : prev))
         showToast.error(response.message || 'Failed to update', 'admin')
       }
     } catch (error: unknown) {
+      // Revert on failure
+      setStatus((prev) => (prev ? { ...prev, enabled: !enabled } : prev))
       const err = error as { response?: { data?: { message?: string } } }
       showToast.error(err.response?.data?.message || 'Failed to update', 'admin')
     } finally {
@@ -111,15 +122,22 @@ export default function KillSwitch() {
 
   const handleActivate = async () => {
     setIsActivating(true)
+    // Optimistically update status to ACTIVATED immediately
+    setStatus((prev) => prev ? { ...prev, kill_switch_status: 'ACTIVATED' as const } : prev)
     try {
       const response = await adminApi.activateKillSwitch()
       if (response.status === 'success') {
-        showToast.success(response.message || 'Kill switch activated', 'admin')
+        showToast.success('Kill switch activated successfully', 'admin')
+        // Fetch fresh status from broker to confirm
         fetchStatus(true)
       } else {
+        // Revert on failure
+        setStatus((prev) => prev ? { ...prev, kill_switch_status: 'DEACTIVATED' as const } : prev)
         showToast.error(response.message || 'Failed to activate kill switch', 'admin')
       }
     } catch (error: unknown) {
+      // Revert on failure
+      setStatus((prev) => prev ? { ...prev, kill_switch_status: 'DEACTIVATED' as const } : prev)
       const err = error as { response?: { data?: { message?: string } } }
       showToast.error(err.response?.data?.message || 'Failed to activate kill switch', 'admin')
     } finally {
@@ -176,7 +194,10 @@ export default function KillSwitch() {
           <CardContent className="space-y-4">
             <div className="flex items-center justify-between">
               <span className="text-sm text-muted-foreground">Status</span>
-              <Badge variant={isActivated ? 'destructive' : 'default'} className={!isActivated ? 'bg-green-600 text-white hover:bg-green-700' : ''}>
+              <Badge
+                variant={isActivated ? 'destructive' : 'default'}
+                className={!isActivated ? 'bg-green-600 text-white hover:bg-green-700' : ''}
+              >
                 {isActivated ? (
                   <ShieldOff className="h-3 w-3 mr-1" />
                 ) : (
@@ -191,7 +212,11 @@ export default function KillSwitch() {
             </div>
             <div className="flex items-center justify-between">
               <span className="text-sm text-muted-foreground">Current P&L</span>
-              <span className={`text-sm font-mono font-medium ${(status?.current_pnl ?? 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+              <span
+                className={`text-sm font-mono font-medium ${
+                  (status?.current_pnl ?? 0) >= 0 ? 'text-green-600' : 'text-red-600'
+                }`}
+              >
                 {(status?.current_pnl ?? 0) >= 0 ? '+' : ''}
                 {status?.current_pnl?.toFixed(2)}
               </span>
@@ -270,7 +295,7 @@ export default function KillSwitch() {
       </div>
 
       {/* Manual Activation Card */}
-      <Card className="border-destructive/50">
+      <Card className={isActivated ? 'border-destructive' : 'border-destructive/50'}>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-destructive">
             <AlertTriangle className="h-5 w-5" />
@@ -286,15 +311,19 @@ export default function KillSwitch() {
             variant="destructive"
             onClick={handleActivate}
             disabled={isActivating || isActivated}
-            aria-label="Activate kill switch"
+            aria-label={isActivated ? 'Kill switch already activated' : 'Activate kill switch'}
           >
             <ShieldOff className="h-4 w-4 mr-2" />
-            {isActivating ? 'Activating...' : isActivated ? 'Already Activated' : 'Activate Kill Switch'}
+            {isActivating
+              ? 'Activating...'
+              : isActivated
+                ? 'Kill Switch ACTIVATED'
+                : 'Activate Kill Switch'}
           </Button>
           {isActivated && (
             <p className="mt-3 text-sm text-muted-foreground">
-              Kill switch is currently ACTIVATED. The broker will reset it automatically before the
-              next market open.
+              Kill switch is currently <span className="text-destructive font-semibold">ACTIVATED</span>.
+              All new orders are blocked. The broker will reset automatically before the next market open.
             </p>
           )}
         </CardContent>
