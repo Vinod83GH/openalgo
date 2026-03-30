@@ -1,10 +1,20 @@
 import json
+import os
 
 from broker.dhan.api.baseurl import get_url
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _get_dhan_client_id() -> str | None:
+    """Extract dhanClientId from BROKER_API_KEY (format: client_id:::api_key)."""
+    broker_api_key = os.getenv("BROKER_API_KEY", "")
+    if ":::" in broker_api_key:
+        client_id, _ = broker_api_key.split(":::", 1)
+        return client_id
+    return None
 
 DHAN_BASE_URL = "https://api.dhan.co/v2"
 
@@ -59,10 +69,8 @@ def activate_kill_switch(access_token: str) -> dict:
 def set_pnl_exit(access_token: str, profit_threshold: float, loss_threshold: float) -> dict:
     """POST /v2/pnlExit — registers P&L thresholds with the broker.
 
-    Dhan API fields: profitValue, lossValue, productType, enableKillSwitch.
-    A value of 0 means that side is disabled — skip the call entirely in that case.
+    Dhan API fields: dhanClientId, profitValue, lossValue, productType, enableKillSwitch.
     """
-    # If both thresholds are 0, nothing to configure
     if profit_threshold == 0 and loss_threshold == 0:
         logger.info("pnlExit: both thresholds are 0, skipping API call")
         return {"pnlExitStatus": "SKIPPED", "message": "Both thresholds are 0"}
@@ -77,6 +85,10 @@ def set_pnl_exit(access_token: str, profit_threshold: float, loss_threshold: flo
         "productType": ["INTRADAY", "DELIVERY"],
         "enableKillSwitch": True,
     }
+
+    client_id = _get_dhan_client_id()
+    if client_id:
+        payload_dict["dhanClientId"] = client_id
 
     payload = json.dumps(payload_dict)
     logger.info(f"pnlExit payload: {payload}")
