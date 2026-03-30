@@ -85,3 +85,18 @@ export interface AdminStats {
   freeze_count: number
   holiday_count: number
 }
+
+export interface KillSwitchStatus {
+  broker_name: string
+  enabled: boolean
+  profit_threshold: number
+  loss_threshold: number
+  kill_switch_status: 'ACTIVATED' | 'DEACTIVATED'
+  current_pnl: number
+}
+
+export interface UpdateKillSwitchConfigRequest {
+  enabled: boolean
+  profit_threshold: number
+  loss_threshold: number
+}
