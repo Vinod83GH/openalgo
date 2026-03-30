@@ -1,3 +1,5 @@
+# blueprints/kill_switch.py
+
 import os
 
 from flask import Blueprint, jsonify, request, session

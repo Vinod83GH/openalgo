@@ -5,6 +5,7 @@ import {
   Clock,
   Settings,
   Shield,
+  ShieldOff,
   Snowflake,
   Zap,
 } from 'lucide-react'
@@ -84,6 +85,14 @@ export default function AdminIndex() {
       href: '/logs/latency',
       countLabel: 'monitoring',
       color: 'bg-orange-500',
+    },
+    {
+      title: 'Kill Switch',
+      description: 'Configure P&L thresholds and manually activate broker kill switch',
+      icon: ShieldOff,
+      href: '/admin/kill-switch',
+      countLabel: 'risk control',
+      color: 'bg-red-600',
     },
   ]
 

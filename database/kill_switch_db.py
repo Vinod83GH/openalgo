@@ -1,3 +1,5 @@
+# database/kill_switch_db.py
+
 import os
 import threading
 
@@ -17,6 +19,7 @@ _cache_lock = threading.Lock()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# Follow the same engine pattern as settings_db.py
 if DATABASE_URL and "sqlite" in DATABASE_URL:
     engine = create_engine(
         DATABASE_URL, poolclass=NullPool, connect_args={"check_same_thread": False}
@@ -38,13 +41,12 @@ class KillSwitchConfig(Base):
     profit_threshold = Column(Numeric(18, 4), nullable=False, default=0)
     loss_threshold = Column(Numeric(18, 4), nullable=False, default=0)
     kill_switch_status = Column(String(16), nullable=False, default="DEACTIVATED")
-    # Cached P&L updated by PnL monitor — avoids live broker calls on status fetch
-    current_pnl = Column(Numeric(18, 2), nullable=False, default=0)
 
 
 def init_db():
     """Create the kill_switch_config table if it does not exist."""
     from database.db_init_helper import init_db_with_logging
+
     init_db_with_logging(Base, engine, "Kill Switch DB", logger)
 
 
@@ -53,6 +55,7 @@ def _cache_key(broker_name: str) -> str:
 
 
 def invalidate_kill_switch_cache(broker_name: str) -> None:
+    """Remove the entry for broker_name from the TTLCache."""
     key = _cache_key(broker_name)
     with _cache_lock:
         if key in _kill_switch_cache:
@@ -60,13 +63,17 @@ def invalidate_kill_switch_cache(broker_name: str) -> None:
 
 
 def get_kill_switch_config(broker_name: str) -> KillSwitchConfig:
-    """Return the KillSwitchConfig for broker_name, creating a default record if none exists."""
+    """Return the KillSwitchConfig for broker_name, creating a default record if none exists.
+
+    Results are cached with a 60-second TTL.
+    """
     key = _cache_key(broker_name)
 
     with _cache_lock:
         if key in _kill_switch_cache:
             return _kill_switch_cache[key]
 
+    # Cache miss — query DB
     config = KillSwitchConfig.query.filter_by(broker_name=broker_name).first()
     if config is None:
         config = KillSwitchConfig(
@@ -75,14 +82,15 @@ def get_kill_switch_config(broker_name: str) -> KillSwitchConfig:
             profit_threshold=0,
             loss_threshold=0,
             kill_switch_status="DEACTIVATED",
-            current_pnl=0,
         )
         try:
             db_session.add(config)
             db_session.commit()
         except Exception as e:
             db_session.rollback()
-            logger.debug(f"Kill Switch DB: Default config may already exist (race condition): {e}")
+            logger.debug(
+                f"Kill Switch DB: Default config may already exist (race condition): {e}"
+            )
             config = KillSwitchConfig.query.filter_by(broker_name=broker_name).first()
 
     with _cache_lock:
@@ -92,7 +100,10 @@ def get_kill_switch_config(broker_name: str) -> KillSwitchConfig:
 
 
 def upsert_kill_switch_config(broker_name: str, **fields) -> KillSwitchConfig:
-    """Update or insert kill switch config fields for broker_name."""
+    """Update or insert kill switch config fields for broker_name.
+
+    Invalidates the TTLCache entry after the update.
+    """
     config = KillSwitchConfig.query.filter_by(broker_name=broker_name).first()
     if config is None:
         config = KillSwitchConfig(broker_name=broker_name)
@@ -117,7 +128,6 @@ def update_kill_switch_status_cache(broker_name: str, status: str) -> None:
             profit_threshold=0,
             loss_threshold=0,
             kill_switch_status=status,
-            current_pnl=0,
         )
         db_session.add(config)
     else:
@@ -127,17 +137,8 @@ def update_kill_switch_status_cache(broker_name: str, status: str) -> None:
     invalidate_kill_switch_cache(broker_name)
 
 
-def update_kill_switch_pnl(broker_name: str, pnl: float) -> None:
-    """Update the cached current_pnl value for a broker (called by PnL monitor)."""
-    config = KillSwitchConfig.query.filter_by(broker_name=broker_name).first()
-    if config is not None:
-        config.current_pnl = round(pnl, 2)
-        db_session.commit()
-        invalidate_kill_switch_cache(broker_name)
-
-
 def is_kill_switch_active(broker_name: str) -> bool:
-    """Return True when the cached kill_switch_status is 'ACTIVATED'."""
+    """Return True when the cached kill_switch_status is "ACTIVATED"."""
     key = _cache_key(broker_name)
 
     with _cache_lock:
@@ -145,5 +146,6 @@ def is_kill_switch_active(broker_name: str) -> bool:
             cached = _kill_switch_cache[key]
             return cached.kill_switch_status == "ACTIVATED"
 
+    # Cache miss — load from DB (also populates cache)
     config = get_kill_switch_config(broker_name)
     return config.kill_switch_status == "ACTIVATED"
