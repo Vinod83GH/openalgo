@@ -16,8 +16,6 @@ def _get_dhan_client_id() -> str | None:
         return client_id
     return None
 
-DHAN_BASE_URL = "https://api.dhan.co/v2"
-
 
 def _get_headers(access_token: str, include_content_type: bool = False) -> dict:
     headers = {
@@ -37,7 +35,11 @@ def _raise_for_status(response) -> None:
 
 
 def get_kill_switch_status(access_token: str) -> str:
-    """GET /v2/killswitch — returns 'ACTIVATED' or 'DEACTIVATED'."""
+    """GET /v2/killswitch — returns 'ACTIVATED' or 'DEACTIVATED'.
+
+    Dhan API returns killSwitchStatus as 'ACTIVATE' or 'DEACTIVATE'.
+    We normalise to 'ACTIVATED' / 'DEACTIVATED' for internal consistency.
+    """
     client = get_httpx_client()
     url = get_url("/v2/killswitch")
     headers = _get_headers(access_token)
@@ -48,8 +50,9 @@ def get_kill_switch_status(access_token: str) -> str:
     data = json.loads(response.text)
     logger.info(f"Kill switch status response: {data}")
 
-    kill_switch_status = data.get("killSwitchStatus", "DEACTIVATED")
-    return "ACTIVATED" if kill_switch_status == "ACTIVATED" else "DEACTIVATED"
+    kill_switch_status = data.get("killSwitchStatus", "DEACTIVATE")
+    # Dhan returns "ACTIVATE" or "DEACTIVATE" — normalise to ACTIVATED/DEACTIVATED
+    return "ACTIVATED" if kill_switch_status in ("ACTIVATE", "ACTIVATED") else "DEACTIVATED"
 
 
 def activate_kill_switch(access_token: str) -> dict:
