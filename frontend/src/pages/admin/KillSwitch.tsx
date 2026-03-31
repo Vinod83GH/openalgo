@@ -1,5 +1,5 @@
 import { AlertTriangle, ArrowLeft, RefreshCw, Shield, ShieldOff } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { adminApi } from '@/api/admin'
 import { Badge } from '@/components/ui/badge'
@@ -24,30 +24,23 @@ export default function KillSwitch() {
   const [isActivating, setIsActivating] = useState(false)
   const [isTogglingEnabled, setIsTogglingEnabled] = useState(false)
 
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  const fetchStatus = async (silent = false) => {
-    if (!silent) setIsRefreshing(true)
+  const fetchStatus = async () => {
+    setIsRefreshing(true)
     try {
       const data = await adminApi.getKillSwitchStatus()
       setStatus(data)
-      // Always sync threshold inputs with latest server values
       setProfitThreshold(String(data.profit_threshold))
       setLossThreshold(String(data.loss_threshold))
     } catch {
       showToast.error('Failed to load kill switch status', 'admin')
     } finally {
-      if (!silent) setIsRefreshing(false)
+      setIsRefreshing(false)
       setIsLoading(false)
     }
   }
 
   useEffect(() => {
     fetchStatus()
-    intervalRef.current = setInterval(() => fetchStatus(true), 30_000)
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current)
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -79,7 +72,6 @@ export default function KillSwitch() {
           profit_threshold: parseFloat(profitThreshold),
           loss_threshold: parseFloat(lossThreshold),
         } : prev)
-        fetchStatus(true)
       } else {
         showToast.error(response.message || 'Failed to save thresholds', 'admin')
       }
@@ -104,7 +96,6 @@ export default function KillSwitch() {
       })
       if (response.status === 'success') {
         showToast.success(enabled ? 'Kill switch enabled' : 'Kill switch disabled', 'admin')
-        fetchStatus(true)
       } else {
         // Revert on failure
         setStatus((prev) => (prev ? { ...prev, enabled: !enabled } : prev))
@@ -128,8 +119,6 @@ export default function KillSwitch() {
       const response = await adminApi.activateKillSwitch()
       if (response.status === 'success') {
         showToast.success('Kill switch activated successfully', 'admin')
-        // Fetch fresh status from broker to confirm
-        fetchStatus(true)
       } else {
         // Revert on failure
         setStatus((prev) => prev ? { ...prev, kill_switch_status: 'DEACTIVATED' as const } : prev)
