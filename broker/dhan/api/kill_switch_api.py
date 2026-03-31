@@ -89,9 +89,9 @@ def set_pnl_exit(access_token: str, profit_threshold: float, loss_threshold: flo
         "enableKillSwitch": True,
     }
 
-    # client_id = _get_dhan_client_id()
-    # if client_id:
-    #     payload_dict["dhanClientId"] = client_id
+    client_id = _get_dhan_client_id()
+    if client_id:
+        payload_dict["dhanClientId"] = client_id
 
     payload = json.dumps(payload_dict)
     logger.info(f"pnlExit payload: {payload}")
