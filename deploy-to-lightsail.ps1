@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$INSTANCE_IP = "3.109.183.169"
+$INSTANCE_IP = "3.7.93.99"
 $SSH_KEY = "ubuntu-keypair-prod.pem"
 $GITHUB_REPO = "git@github.com:Vinod83GH/openalgo.git"
 $BRANCH = "Kill-switch"

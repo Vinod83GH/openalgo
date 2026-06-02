@@ -61,6 +61,23 @@ def broker_callback(broker, para=None):
         session["broker"] = broker
         return redirect(url_for("dashboard_bp.dashboard"))
 
+    # Load stored credentials from DB if the user has saved creds for this broker.
+    # This overrides the .env defaults, enabling per-user multi-broker support.
+    # Falls back to .env credentials if no DB record exists (backward compatibility).
+    if "user" in session:
+        try:
+            from database.broker_credentials_db import get_credentials as get_stored_creds
+
+            stored_creds = get_stored_creds(session["user"], broker)
+            if stored_creds:
+                os.environ["BROKER_API_KEY"] = stored_creds.get("api_key") or ""
+                os.environ["BROKER_API_SECRET"] = stored_creds.get("api_secret") or ""
+                if stored_creds.get("redirect_url"):
+                    os.environ["REDIRECT_URL"] = stored_creds["redirect_url"]
+                logger.info(f"Loaded stored credentials from DB for user {session['user']}, broker {broker}")
+        except Exception as e:
+            logger.warning(f"Could not load stored credentials for {broker}: {e}, falling back to .env")
+
     broker_auth_functions = app.broker_auth_functions
     auth_function = broker_auth_functions.get(f"{broker}_auth")
 
