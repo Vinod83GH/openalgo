@@ -107,6 +107,18 @@ def save_broker_credentials(broker):
             400,
         )
 
+    # If api_secret contains asterisks, it's a masked value from the GET endpoint.
+    # Use the existing secret from the DB instead of overwriting with masked string.
+    if "*" in api_secret:
+        existing = get_credentials(username, broker)
+        if existing and existing.get("api_secret"):
+            api_secret = existing["api_secret"]
+        else:
+            return (
+                jsonify({"status": "error", "message": "Please enter the actual API secret (not masked value)"}),
+                400,
+            )
+
     try:
         success = save_credentials(
             username=username,
