@@ -4,7 +4,7 @@ set -e
 INSTANCE_IP="3.7.93.99"
 SSH_KEY="ubuntu-keypair-prod.pem"
 HTTPS_REPO="https://github.com/Vinod83GH/openalgo.git"
-BRANCH="Kill-switch"
+BRANCH="dev-jun26"
 APP_DIR="/home/ubuntu/openalgo"
 
 echo "=== OpenAlgo Lightsail Deployment (Build-on-Instance) ==="
