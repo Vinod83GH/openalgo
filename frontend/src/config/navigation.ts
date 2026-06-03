@@ -1,4 +1,5 @@
 import {
+  ArrowLeftRight,
   BarChart3,
   Bell,
   BookOpen,
@@ -59,6 +60,7 @@ export const mobileSheetItems = navItems.filter((item) => !bottomNavPaths.includ
 
 // Profile dropdown menu items
 export const profileMenuItems: NavItem[] = [
+  { href: '/broker', label: 'Switch Broker', icon: ArrowLeftRight },
   { href: '/profile', label: 'Profile', icon: User },
   { href: '/apikey', label: 'API Key', icon: Key },
   { href: '/master-contract', label: 'Master Contract', icon: FileStack },
