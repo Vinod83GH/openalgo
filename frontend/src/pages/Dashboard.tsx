@@ -288,7 +288,7 @@ export default function Dashboard() {
           </AlertTitle>
           <AlertDescription className="text-amber-700 dark:text-amber-300">
             Connect a broker to start trading.{' '}
-            <Link to="/broker-select" className="font-medium underline hover:no-underline">
+            <Link to="/broker" className="font-medium underline hover:no-underline">
               Go to Broker Selection
             </Link>
           </AlertDescription>

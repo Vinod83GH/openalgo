@@ -119,7 +119,7 @@ def login():
         # Check if already logged in
         if "user" in session:
             return jsonify(
-                {"status": "success", "message": "Already logged in", "redirect": "/broker-select"}
+                {"status": "success", "message": "Already logged in", "redirect": "/broker"}
             ), 200
 
         if session.get("logged_in"):
@@ -134,7 +134,7 @@ def login():
             session["user"] = username  # Set the username in the session
             logger.info(f"Login success for user: {username}")
             # Redirect to broker selection without marking as fully logged in
-            return jsonify({"status": "success", "redirect": "/broker-select"}), 200
+            return jsonify({"status": "success", "redirect": "/broker"}), 200
         else:
             return jsonify({"status": "error", "message": "Invalid credentials"}), 401
 
@@ -143,7 +143,7 @@ def login():
         return redirect("/setup")
 
     if "user" in session:
-        return redirect("/broker-select")
+        return redirect("/broker")
 
     if session.get("logged_in"):
         return redirect("/dashboard")

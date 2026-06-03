@@ -156,7 +156,7 @@ def disconnect():
     return jsonify({
         "status": "success",
         "message": f"Disconnected from broker '{broker}'",
-        "data": {"redirect": "/broker-select"},
+        "data": {"redirect": "/broker"},
     })
 
 
