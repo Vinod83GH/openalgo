@@ -233,10 +233,11 @@ trap cleanup SIGTERM SIGINT
 # Use PORT env var if set (Railway/cloud), otherwise default to 5000
 APP_PORT="${PORT:-5000}"
 
-echo "[OpenAlgo] Starting application on port ${APP_PORT} with eventlet..."
+echo "[OpenAlgo] Starting application on port ${APP_PORT} with gthread worker..."
 exec /app/.venv/bin/gunicorn \
-    --worker-class eventlet \
+    --worker-class gthread \
     --workers 1 \
+    --threads 4 \
     --bind 0.0.0.0:${APP_PORT} \
     --timeout 120 \
     --graceful-timeout 30 \

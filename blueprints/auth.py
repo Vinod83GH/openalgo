@@ -133,8 +133,8 @@ def login():
         if authenticate_user(username, password):
             session["user"] = username  # Set the username in the session
             logger.info(f"Login success for user: {username}")
-            # Redirect to broker login without marking as fully logged in
-            return jsonify({"status": "success"}), 200
+            # Redirect to broker selection without marking as fully logged in
+            return jsonify({"status": "success", "redirect": "/broker"}), 200
         else:
             return jsonify({"status": "error", "message": "Invalid credentials"}), 401
 
@@ -523,6 +523,17 @@ def get_session_status():
             {"status": "success", "message": "Not authenticated", "authenticated": False, "logged_in": False}
         ), 200
 
+    # Get list of available brokers from the broker directory
+    available_brokers = []
+    try:
+        broker_path = os.path.join(current_app.root_path, "broker")
+        available_brokers = sorted([
+            d for d in os.listdir(broker_path)
+            if os.path.isdir(os.path.join(broker_path, d)) and d != "__pycache__"
+        ])
+    except Exception as e:
+        logger.warning(f"Could not list available brokers: {e}")
+
     # If session claims to be logged in with broker, validate the auth token exists
     if session.get("logged_in") and session.get("broker"):
         from database.auth_db import get_api_key_for_tradingview, get_auth_token
@@ -549,6 +560,7 @@ def get_session_status():
                 "user": session.get("user"),
                 "broker": session.get("broker"),
                 "api_key": api_key,
+                "available_brokers": available_brokers,
             }
         )
 
@@ -559,6 +571,7 @@ def get_session_status():
             "logged_in": session.get("logged_in", False),
             "user": session.get("user"),
             "broker": session.get("broker"),
+            "available_brokers": available_brokers,
         }
     )
 

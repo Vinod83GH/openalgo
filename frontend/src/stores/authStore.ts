@@ -12,11 +12,16 @@ interface AuthStore {
   user: User | null
   apiKey: string | null
   isAuthenticated: boolean
+  isBrokerConnected: boolean
+  availableBrokers: string[]
 
   setUser: (user: User) => void
   setApiKey: (apiKey: string | null) => void
-  login: (username: string, broker: string) => void
+  setAvailableBrokers: (brokers: string[]) => void
+  login: (username: string, broker: string | null) => void
   logout: () => void
+  connectBroker: (broker: string) => Promise<{ success: boolean; redirectUrl?: string; message?: string }>
+  disconnectBroker: () => Promise<{ success: boolean; message?: string }>
   checkSession: () => boolean
 }
 
@@ -26,23 +31,85 @@ export const useAuthStore = create<AuthStore>()(
       user: null,
       apiKey: null,
       isAuthenticated: false,
+      isBrokerConnected: false,
+      availableBrokers: [],
 
-      setUser: (user) => set({ user, isAuthenticated: user.isLoggedIn }),
+      setUser: (user) => set({
+        user,
+        isAuthenticated: !!user.username,
+        isBrokerConnected: user.isLoggedIn,
+      }),
 
       setApiKey: (apiKey) => set({ apiKey }),
+
+      setAvailableBrokers: (brokers) => set({ availableBrokers: brokers }),
 
       login: (username, broker) => {
         const user: User = {
           username,
           broker,
-          isLoggedIn: true,
+          isLoggedIn: !!broker,
           loginTime: new Date().toISOString(),
         }
-        set({ user, isAuthenticated: true })
+        set({
+          user,
+          isAuthenticated: true,
+          isBrokerConnected: !!broker,
+        })
       },
 
       logout: () => {
-        set({ user: null, isAuthenticated: false, apiKey: null })
+        set({
+          user: null,
+          isAuthenticated: false,
+          isBrokerConnected: false,
+          apiKey: null,
+          availableBrokers: [],
+        })
+      },
+
+      connectBroker: async (broker: string) => {
+        try {
+          const response = await fetch('/broker-session/connect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ broker }),
+          })
+          const data = await response.json()
+          if (data.status === 'success') {
+            return {
+              success: true,
+              redirectUrl: data.data?.redirect_url,
+              message: data.message,
+            }
+          }
+          return { success: false, message: data.message }
+        } catch (error) {
+          return { success: false, message: 'Failed to connect to broker' }
+        }
+      },
+
+      disconnectBroker: async () => {
+        try {
+          const response = await fetch('/broker-session/disconnect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+          })
+          const data = await response.json()
+          if (data.status === 'success') {
+            const { user } = get()
+            if (user) {
+              set({
+                user: { ...user, broker: null, isLoggedIn: false },
+                isBrokerConnected: false,
+              })
+            }
+            return { success: true, message: data.message }
+          }
+          return { success: false, message: data.message }
+        } catch (error) {
+          return { success: false, message: 'Failed to disconnect broker' }
+        }
       },
 
       checkSession: () => {
