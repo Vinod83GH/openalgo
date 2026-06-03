@@ -141,11 +141,12 @@ def update_kill_switch_config(
     try:
         adapter.set_pnl_exit(auth_token, float(profit_threshold), float(loss_threshold))
     except Exception as e:
+        # pnlExit failure (e.g. IP not whitelisted) is non-fatal — local config is saved
+        # and our PnL monitor will still evaluate thresholds independently
         logger.warning(
             f"Kill switch: pnlExit call failed for {broker_name}: {e}. "
-            "Local config was saved."
+            "Local config was saved. Our PnL monitor will still enforce thresholds."
         )
-        raise
 
     invalidate_kill_switch_cache(broker_name)
 

@@ -61,6 +61,23 @@ def broker_callback(broker, para=None):
         session["broker"] = broker
         return redirect(url_for("dashboard_bp.dashboard"))
 
+    # Load stored credentials from DB if the user has saved creds for this broker.
+    # This overrides the .env defaults, enabling per-user multi-broker support.
+    # Falls back to .env credentials if no DB record exists (backward compatibility).
+    if "user" in session:
+        try:
+            from database.broker_credentials_db import get_credentials as get_stored_creds
+
+            stored_creds = get_stored_creds(session["user"], broker)
+            if stored_creds:
+                os.environ["BROKER_API_KEY"] = stored_creds.get("api_key") or ""
+                os.environ["BROKER_API_SECRET"] = stored_creds.get("api_secret") or ""
+                if stored_creds.get("redirect_url"):
+                    os.environ["REDIRECT_URL"] = stored_creds["redirect_url"]
+                logger.info(f"Loaded stored credentials from DB for user {session['user']}, broker {broker}")
+        except Exception as e:
+            logger.warning(f"Could not load stored credentials for {broker}: {e}, falling back to .env")
+
     broker_auth_functions = app.broker_auth_functions
     auth_function = broker_auth_functions.get(f"{broker}_auth")
 
@@ -791,15 +808,32 @@ def dhan_initiate_oauth():
     if "user" not in session:
         return redirect(url_for("auth.login"))
 
-    # Get client_id from .env BROKER_API_KEY (format: client_id:::api_key)
-    BROKER_API_KEY = os.getenv("BROKER_API_KEY")
+    # Load stored credentials from DB for Dhan (sets env vars)
+    try:
+        from database.broker_credentials_db import get_credentials as get_stored_creds
+
+        stored_creds = get_stored_creds(session["user"], "dhan")
+        if stored_creds:
+            os.environ["BROKER_API_KEY"] = stored_creds.get("api_key") or ""
+            os.environ["BROKER_API_SECRET"] = stored_creds.get("api_secret") or ""
+            if stored_creds.get("redirect_url"):
+                os.environ["REDIRECT_URL"] = stored_creds["redirect_url"]
+            logger.info(f"Loaded stored Dhan credentials from DB for user {session['user']}")
+    except Exception as e:
+        logger.warning(f"Could not load stored credentials for dhan: {e}")
+
+    # Get client_id: try from BROKER_API_KEY format (client_id:::api_key), then from stored client_id
+    BROKER_API_KEY = os.getenv("BROKER_API_KEY", "")
     client_id = None
 
-    if ":::" in BROKER_API_KEY:
+    if BROKER_API_KEY and ":::" in BROKER_API_KEY:
         client_id, _ = BROKER_API_KEY.split(":::")
+    elif stored_creds and stored_creds.get("client_id"):
+        # Use the client_id field from stored credentials
+        client_id = stored_creds["client_id"]
 
     if not client_id:
-        error_message = "Client ID not found in BROKER_API_KEY. Please configure BROKER_API_KEY as 'client_id:::api_key' in .env"
+        error_message = "Client ID not found. For Dhan, enter API key as 'client_id:::api_key' or provide Client ID separately."
         logger.error(error_message)
         return handle_auth_failure(error_message, forward_url="broker.html")
 

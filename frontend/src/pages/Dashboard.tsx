@@ -1,9 +1,11 @@
 import { BarChart3, BookOpen, FileText, MessageCircle, Search, Zap } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
+import { useAuthStore } from '@/stores/authStore'
 import { onModeChange } from '@/stores/themeStore'
 
 interface MarginData {
@@ -59,6 +61,7 @@ function getPnLBadgeVariant(value: string | number): 'default' | 'destructive' |
 }
 
 export default function Dashboard() {
+  const { isAuthenticated: isAppAuthenticated, isBrokerConnected } = useAuthStore()
   const [marginData, setMarginData] = useState<MarginData | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -69,6 +72,12 @@ export default function Dashboard() {
 
   // Fetch dashboard funds data
   const fetchFundsData = useCallback(async () => {
+    // Skip data fetching when no broker is connected
+    if (!isBrokerConnected) {
+      setIsLoading(false)
+      return
+    }
+
     try {
       setIsLoading(true)
       const response = await fetch('/auth/dashboard-data', {
@@ -94,7 +103,7 @@ export default function Dashboard() {
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [isBrokerConnected])
 
   useEffect(() => {
     fetchFundsData()
@@ -271,6 +280,21 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6 md:space-y-12">
+      {/* Broker Not Connected Warning Banner */}
+      {isAppAuthenticated && !isBrokerConnected && (
+        <Alert className="border-amber-500/50 bg-amber-500/10">
+          <AlertTitle className="text-amber-600 dark:text-amber-400">
+            No Broker Connected
+          </AlertTitle>
+          <AlertDescription className="text-amber-700 dark:text-amber-300">
+            Connect a broker to start trading.{' '}
+            <Link to="/broker" className="font-medium underline hover:no-underline">
+              Go to Broker Selection
+            </Link>
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/* Dashboard Header */}
       <div className="flex flex-col lg:flex-row lg:items-start gap-4">
         <div className="flex-1">
