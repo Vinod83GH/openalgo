@@ -249,13 +249,8 @@ export default function BrokerSelect() {
       // Step 2: Trigger broker connect via /broker-session/connect
       const connectResult = await connectBroker(selectedBroker)
 
-      if (connectResult.success && connectResult.redirectUrl) {
-        // Redirect to broker auth flow URL returned by connect
-        setTimeout(() => {
-          window.location.href = connectResult.redirectUrl!
-        }, 100)
-      } else if (connectResult.success) {
-        // Fallback: use broker login URL generation logic
+      if (connectResult.success) {
+        // Use the client-side URL generation (handles OAuth external URLs correctly)
         const loginUrl = getBrokerLoginUrl(
           selectedBroker,
           credentials.api_key,
