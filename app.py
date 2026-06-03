@@ -390,6 +390,10 @@ def create_app():
         # Exempt logout endpoint from CSRF protection (safe - only destroys session)
         csrf.exempt(app.view_functions["auth.logout"])
 
+        # Exempt broker credentials and session endpoints from CSRF (session-auth, same-origin)
+        csrf.exempt(broker_credentials_store_bp)
+        csrf.exempt(broker_session_bp)
+
         # Exempt health check endpoints from CSRF (for AWS ELB, K8s probes)
         csrf.exempt(app.view_functions["health_bp.simple_health"])
         csrf.exempt(app.view_functions["health_bp.detailed_health_check"])
