@@ -379,6 +379,18 @@ def react_admin_timings():
     return serve_react_app()
 
 
+# Admin - Kill Switch
+@react_bp.route("/admin/kill-switch", strict_slashes=False)
+def react_admin_kill_switch():
+    return serve_react_app()
+
+
+# Admin - TV Alert Options
+@react_bp.route("/admin/tv-alert-options", strict_slashes=False)
+def react_admin_tv_alert_options():
+    return serve_react_app()
+
+
 # Leverage Configuration (Crypto)
 @react_bp.route("/leverage", strict_slashes=False)
 def react_leverage():
