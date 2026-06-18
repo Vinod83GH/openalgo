@@ -27,7 +27,7 @@ REQUIRED_FIELDS = ["cmp", "symbol", "charttype", "signal", "option_type", "sl", 
 
 # Valid enum values (stored uppercase for case-insensitive comparison)
 VALID_SIGNALS = {"BUY", "SELL"}
-VALID_CHARTTYPES = {"SPOT", "OPTION"}
+VALID_CHARTTYPES = {"SPOT_OPTIONS", "SPOT_FUTURE", "OPTIONS"}
 VALID_OPTION_TYPES = {"CE", "PE"}
 
 
@@ -63,12 +63,13 @@ def validate_tv_alert_payload(data: dict) -> tuple:
     # Validate charttype enum (case-insensitive)
     charttype = str(data["charttype"]).strip().upper()
     if charttype not in VALID_CHARTTYPES:
-        return False, f"Invalid charttype value: '{data['charttype']}'. Must be one of: SPOT, OPTION"
+        return False, f"Invalid charttype value: '{data['charttype']}'. Must be one of: SPOT_OPTIONS, SPOT_FUTURE, OPTIONS"
 
-    # Validate option_type enum (case-insensitive)
-    option_type = str(data["option_type"]).strip().upper()
-    if option_type not in VALID_OPTION_TYPES:
-        return False, f"Invalid option_type value: '{data['option_type']}'. Must be one of: CE, PE"
+    # Validate option_type enum (only required for SPOT_OPTIONS)
+    if charttype == "SPOT_OPTIONS":
+        option_type = str(data["option_type"]).strip().upper()
+        if option_type not in VALID_OPTION_TYPES:
+            return False, f"Invalid option_type value: '{data['option_type']}'. Must be one of: CE, PE"
 
     return True, None
 
@@ -296,6 +297,94 @@ def resolve_option_symbol(
         f"(underlying={symbol}, cmp={cmp}, option_type={option_type}, expiry={expiry})"
     )
     return True, resolved_symbol, None
+
+
+def resolve_future_symbol(symbol: str, exchange: str) -> tuple:
+    """
+    Resolve the current month future symbol for a given underlying.
+
+    Queries the SymToken table for FUT entries of the symbol on the given exchange
+    and returns the nearest-expiry future contract symbol.
+
+    Args:
+        symbol: Underlying symbol (e.g., "NIFTY")
+        exchange: Futures exchange (e.g., "NFO")
+
+    Returns:
+        Tuple of (success, resolved_symbol, error_message)
+        - (True, "NIFTY26JUNFUT", None) on success
+        - (False, None, "descriptive error") on failure
+    """
+    try:
+        today = datetime.now().date()
+
+        # Query SymToken for FUT instruments matching this symbol
+        results = (
+            symbol_db_session.query(SymToken)
+            .filter(
+                SymToken.name.ilike(symbol.strip().upper()),
+                SymToken.exchange == exchange.upper(),
+                SymToken.instrumenttype == "FUTIDX",
+                SymToken.expiry.isnot(None),
+                SymToken.expiry != "",
+            )
+            .all()
+        )
+
+        # Also try FUTSTK if FUTIDX returns nothing (stock futures)
+        if not results:
+            results = (
+                symbol_db_session.query(SymToken)
+                .filter(
+                    SymToken.name.ilike(symbol.strip().upper()),
+                    SymToken.exchange == exchange.upper(),
+                    SymToken.instrumenttype == "FUTSTK",
+                    SymToken.expiry.isnot(None),
+                    SymToken.expiry != "",
+                )
+                .all()
+            )
+
+        if not results:
+            error_msg = f"No future contracts found for {symbol} on {exchange}"
+            logger.error(error_msg)
+            return False, None, error_msg
+
+        # Find the nearest future expiry (current month or next available)
+        nearest_future = None
+        nearest_date = None
+
+        for row in results:
+            try:
+                exp_date = datetime.strptime(row.expiry, "%d-%b-%y").date()
+            except ValueError:
+                try:
+                    exp_date = datetime.strptime(row.expiry, "%d-%b-%Y").date()
+                except ValueError:
+                    continue
+
+            if exp_date >= today:
+                if nearest_date is None or exp_date < nearest_date:
+                    nearest_date = exp_date
+                    nearest_future = row
+
+        if not nearest_future:
+            error_msg = f"No current/future month contracts found for {symbol} on {exchange}"
+            logger.error(error_msg)
+            return False, None, error_msg
+
+        # Use the symbol field from SymToken (the broker trading symbol)
+        resolved_symbol = nearest_future.symbol
+        logger.info(
+            f"Resolved future symbol: {resolved_symbol} "
+            f"(underlying={symbol}, expiry={nearest_future.expiry})"
+        )
+        return True, resolved_symbol, None
+
+    except Exception as e:
+        error_msg = f"Error resolving future symbol for {symbol} on {exchange}: {e}"
+        logger.error(error_msg)
+        return False, None, error_msg
 
 
 def build_order_data(
@@ -542,8 +631,8 @@ def process_tv_alert(data: dict) -> tuple:
     target = float(data["target"])
     exchange = config.get("exchange", "NFO")
 
-    # Step 5: Resolve option symbol
-    if charttype == "SPOT":
+    # Step 5: Resolve symbol based on chart_type
+    if charttype == "SPOT_OPTIONS":
         success, resolved_symbol, error_msg = resolve_option_symbol(
             symbol=symbol,
             cmp=cmp,
@@ -555,7 +644,16 @@ def process_tv_alert(data: dict) -> tuple:
             response = {"status": "error", "message": error_msg}
             log_tv_alert(data, response)
             return response, 500
-    elif charttype == "OPTION":
+    elif charttype == "SPOT_FUTURE":
+        success, resolved_symbol, error_msg = resolve_future_symbol(
+            symbol=symbol,
+            exchange=exchange,
+        )
+        if not success:
+            response = {"status": "error", "message": error_msg}
+            log_tv_alert(data, response)
+            return response, 500
+    elif charttype == "OPTIONS":
         # Use symbol directly as the option symbol
         resolved_symbol = symbol
     else:
