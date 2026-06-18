@@ -23,6 +23,7 @@ from database.qty_freeze_db import (
     load_freeze_qty_from_csv,
 )
 from database.qty_freeze_db import db_session as freeze_db_session
+from database.settings_db import get_tv_alert_config, set_tv_alert_config
 from limiter import limiter
 from utils.logging import get_logger
 from utils.session import check_session_validity
@@ -581,4 +582,104 @@ def api_timings_check():
         return jsonify({"status": "success", "date": date_str, "timings": result_timings})
     except Exception as e:
         logger.exception(f"Error checking timings: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ============================================================================
+# TV Alert Options Trading Settings API Endpoints
+# ============================================================================
+
+
+@admin_bp.route("/api/tv-alert-settings")
+@check_session_validity
+@limiter.limit(API_RATE_LIMIT)
+def api_tv_alert_settings_get():
+    """Get current TV alert options trading configuration"""
+    try:
+        config = get_tv_alert_config()
+        return jsonify({"status": "success", "data": config})
+    except Exception as e:
+        logger.exception(f"Error fetching TV alert settings: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@admin_bp.route("/api/tv-alert-settings", methods=["POST"])
+@check_session_validity
+@limiter.limit(API_RATE_LIMIT)
+def api_tv_alert_settings_update():
+    """Update TV alert options trading configuration"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"status": "error", "message": "No data provided"}), 400
+
+        # Validate quantity if provided
+        quantity = data.get("quantity")
+        if quantity is not None:
+            try:
+                quantity = int(quantity)
+            except (ValueError, TypeError):
+                return jsonify(
+                    {"status": "error", "message": "Quantity must be a valid integer"}
+                ), 400
+            if quantity <= 0:
+                return jsonify(
+                    {"status": "error", "message": "Quantity must be greater than 0"}
+                ), 400
+
+        # Validate product if provided
+        product = data.get("product")
+        if product is not None:
+            product = str(product).strip().upper()
+            if product not in ("MIS", "NRML"):
+                return jsonify(
+                    {"status": "error", "message": "Product must be MIS or NRML"}
+                ), 400
+
+        # Validate exchange if provided
+        exchange = data.get("exchange")
+        if exchange is not None:
+            exchange = str(exchange).strip().upper()
+            if exchange not in ("NFO", "BFO"):
+                return jsonify(
+                    {"status": "error", "message": "Exchange must be NFO or BFO"}
+                ), 400
+
+        # Validate enabled if provided
+        enabled = data.get("enabled")
+        if enabled is not None:
+            if not isinstance(enabled, bool):
+                return jsonify(
+                    {"status": "error", "message": "Enabled must be a boolean value"}
+                ), 400
+
+        # Validate strategy if provided
+        strategy = data.get("strategy")
+        if strategy is not None:
+            strategy = str(strategy).strip()
+            if not strategy:
+                return jsonify(
+                    {"status": "error", "message": "Strategy name cannot be empty"}
+                ), 400
+
+        # Update settings with validated values
+        set_tv_alert_config(
+            strategy=strategy,
+            quantity=quantity,
+            product=product,
+            exchange=exchange,
+            enabled=enabled,
+        )
+
+        # Return updated config
+        config = get_tv_alert_config()
+        return jsonify(
+            {
+                "status": "success",
+                "message": "TV alert settings updated successfully",
+                "data": config,
+            }
+        )
+    except Exception as e:
+        logger.exception(f"Error updating TV alert settings: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500

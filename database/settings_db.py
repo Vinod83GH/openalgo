@@ -56,6 +56,13 @@ class Settings(Base):
     security_api_ban_duration = Column(Integer, default=48)  # Ban duration in hours
     security_repeat_offender_limit = Column(Integer, default=3)  # Bans before permanent ban
 
+    # TV Alert Options Trading Configuration
+    tv_alert_strategy = Column(String(100), default="TV-Alert-Options")
+    tv_alert_quantity = Column(Integer, default=1)
+    tv_alert_product = Column(String(10), default="MIS")
+    tv_alert_exchange = Column(String(10), default="NFO")
+    tv_alert_enabled = Column(Boolean, default=True)
+
 
 def init_db():
     """Initialize the settings database"""
@@ -258,6 +265,68 @@ def set_security_settings(
     # Invalidate cache after update
     if "security_settings" in _settings_cache:
         del _settings_cache["security_settings"]
+
+
+def get_tv_alert_config():
+    """Get TV alert options trading configuration (cached for 1 hour)"""
+    cache_key = "tv_alert_config"
+
+    # Check cache first
+    if cache_key in _settings_cache:
+        return _settings_cache[cache_key]
+
+    # Cache miss - query database
+    settings = Settings.query.first()
+    if not settings:
+        result = {
+            "strategy": "TV-Alert-Options",
+            "quantity": 1,
+            "product": "MIS",
+            "exchange": "NFO",
+            "enabled": True,
+        }
+        _settings_cache[cache_key] = result
+        return result
+
+    result = {
+        "strategy": settings.tv_alert_strategy or "TV-Alert-Options",
+        "quantity": settings.tv_alert_quantity or 1,
+        "product": settings.tv_alert_product or "MIS",
+        "exchange": settings.tv_alert_exchange or "NFO",
+        "enabled": settings.tv_alert_enabled if settings.tv_alert_enabled is not None else True,
+    }
+
+    # Store in cache
+    _settings_cache[cache_key] = result
+    return result
+
+
+def set_tv_alert_config(
+    strategy=None, quantity=None, product=None, exchange=None, enabled=None
+):
+    """Set TV alert options trading configuration"""
+    settings = Settings.query.first()
+    if not settings:
+        settings = Settings(analyze_mode=False)
+        db_session.add(settings)
+
+    if strategy is not None:
+        settings.tv_alert_strategy = strategy
+    if quantity is not None:
+        settings.tv_alert_quantity = quantity
+    if product is not None:
+        settings.tv_alert_product = product
+    if exchange is not None:
+        settings.tv_alert_exchange = exchange
+    if enabled is not None:
+        settings.tv_alert_enabled = enabled
+
+    db_session.commit()
+    logger.info("TV alert options settings updated successfully")
+
+    # Invalidate cache after update
+    if "tv_alert_config" in _settings_cache:
+        del _settings_cache["tv_alert_config"]
 
 
 def clear_settings_cache():
