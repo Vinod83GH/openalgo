@@ -64,11 +64,42 @@ class Settings(Base):
     tv_alert_enabled = Column(Boolean, default=True)
 
 
+def _migrate_tv_alert_columns():
+    """Add TV alert columns to existing settings table if missing."""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "settings" not in inspector.get_table_names():
+        return
+
+    columns = [col["name"] for col in inspector.get_columns("settings")]
+    tv_alert_cols = {
+        "tv_alert_strategy": "VARCHAR(100) DEFAULT 'TV-Alert-Options'",
+        "tv_alert_quantity": "INTEGER DEFAULT 1",
+        "tv_alert_product": "VARCHAR(10) DEFAULT 'MIS'",
+        "tv_alert_exchange": "VARCHAR(10) DEFAULT 'NFO'",
+        "tv_alert_enabled": "BOOLEAN DEFAULT 1",
+    }
+
+    for col_name, col_def in tv_alert_cols.items():
+        if col_name not in columns:
+            try:
+                with engine.connect() as conn:
+                    conn.execute(text(f"ALTER TABLE settings ADD COLUMN {col_name} {col_def}"))
+                    conn.commit()
+                logger.info(f"Migration: Added '{col_name}' column to settings table")
+            except Exception as e:
+                logger.debug(f"Migration: Column '{col_name}' may already exist: {e}")
+
+
 def init_db():
     """Initialize the settings database"""
     from database.db_init_helper import init_db_with_logging
 
     init_db_with_logging(Base, engine, "Settings DB", logger)
+
+    # Migrate: add TV alert columns to existing settings table
+    _migrate_tv_alert_columns()
 
     # Create default settings only if no settings exist (with race condition protection)
     try:
