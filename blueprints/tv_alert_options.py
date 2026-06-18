@@ -320,31 +320,24 @@ def resolve_future_symbol(symbol: str, exchange: str) -> tuple:
         today = datetime.now().date()
 
         # Query SymToken for FUT instruments matching this symbol
-        results = (
-            symbol_db_session.query(SymToken)
-            .filter(
-                SymToken.name.ilike(symbol.strip().upper()),
-                SymToken.exchange == exchange.upper(),
-                SymToken.instrumenttype == "FUTIDX",
-                SymToken.expiry.isnot(None),
-                SymToken.expiry != "",
-            )
-            .all()
-        )
+        # Try multiple instrument types: FUTIDX (index), FUTSTK (stock), FUT (MCX/generic)
+        fut_types = ["FUTIDX", "FUTSTK", "FUT", "FUTCOM", "FUTCUR"]
+        results = []
 
-        # Also try FUTSTK if FUTIDX returns nothing (stock futures)
-        if not results:
+        for fut_type in fut_types:
             results = (
                 symbol_db_session.query(SymToken)
                 .filter(
                     SymToken.name.ilike(symbol.strip().upper()),
                     SymToken.exchange == exchange.upper(),
-                    SymToken.instrumenttype == "FUTSTK",
+                    SymToken.instrumenttype == fut_type,
                     SymToken.expiry.isnot(None),
                     SymToken.expiry != "",
                 )
                 .all()
             )
+            if results:
+                break
 
         if not results:
             error_msg = f"No future contracts found for {symbol} on {exchange}"
