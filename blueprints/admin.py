@@ -640,9 +640,9 @@ def api_tv_alert_settings_update():
         exchange = data.get("exchange")
         if exchange is not None:
             exchange = str(exchange).strip().upper()
-            if exchange not in ("NFO", "BFO"):
+            if exchange not in ("NFO", "BFO", "MCX", "CDS"):
                 return jsonify(
-                    {"status": "error", "message": "Exchange must be NFO or BFO"}
+                    {"status": "error", "message": "Exchange must be NFO, BFO, MCX, or CDS"}
                 ), 400
 
         # Validate enabled if provided

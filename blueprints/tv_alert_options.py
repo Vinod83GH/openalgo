@@ -1,5 +1,6 @@
 # blueprints/tv_alert_options.py
 
+import re
 from datetime import datetime
 
 from flask import Blueprint, request
@@ -626,10 +627,12 @@ def process_tv_alert(data: dict) -> tuple:
     signal = str(data["signal"]).strip().upper()
     option_type = str(data["option_type"]).strip().upper()
     symbol = str(data["symbol"]).strip()
+    # Strip TradingView continuous contract suffixes (e.g., "1!", "2!")
+    symbol = re.sub(r'\d+!$', '', symbol)
     cmp = float(data["cmp"])
     sl = float(data["sl"])
     target = float(data["target"])
-    exchange = config.get("exchange", "NFO")
+    exchange = str(data.get("exchange", "")).strip().upper() or config.get("exchange", "NFO")
 
     # Step 5: Resolve symbol based on chart_type
     if charttype == "SPOT_OPTIONS":

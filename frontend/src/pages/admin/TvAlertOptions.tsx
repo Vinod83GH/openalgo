@@ -166,6 +166,8 @@ export default function TvAlertOptions() {
                 <SelectContent>
                   <SelectItem value="NFO">NFO (NSE F&O)</SelectItem>
                   <SelectItem value="BFO">BFO (BSE F&O)</SelectItem>
+                  <SelectItem value="MCX">MCX (Commodity)</SelectItem>
+                  <SelectItem value="CDS">CDS (Currency)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
