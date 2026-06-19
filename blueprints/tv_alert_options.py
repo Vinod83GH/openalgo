@@ -388,12 +388,14 @@ def build_order_data(
     sl: float,
     target: float,
     exchange: str,
+    limit_price: float = 0,
 ) -> dict:
     """
     Construct the order data dictionary for place_order_service.
 
     Uses get_tv_alert_config() to retrieve the configured quantity, product type,
     and exchange. The signal ("BUY" or "SELL") is passed directly as the order action.
+    Always uses LIMIT order type with the provided limit_price for broker compatibility.
 
     Args:
         api_key: User's API key
@@ -402,6 +404,7 @@ def build_order_data(
         sl: Stop-loss points from the alert
         target: Target points from the alert
         exchange: Trading exchange (e.g., "NFO") — override from alert or config
+        limit_price: The limit price for the order
 
     Returns:
         Order data dictionary compatible with place_order_service
@@ -420,9 +423,9 @@ def build_order_data(
         "exchange": configured_exchange,
         "action": signal.upper(),
         "quantity": str(configured_quantity),
-        "pricetype": "MARKET",
+        "pricetype": "LIMIT",
         "product": configured_product,
-        "price": "0",
+        "price": str(limit_price),
         "trigger_price": "0",
         "disclosed_quantity": "0",
         "target": str(target),
@@ -627,7 +630,9 @@ def process_tv_alert(data: dict) -> tuple:
     target = float(data["target"])
     exchange = str(data.get("exchange", "")).strip().upper() or config.get("exchange", "NFO")
 
-    # Step 5: Resolve symbol based on chart_type
+    # Step 5: Resolve symbol based on chart_type and determine limit_price
+    limit_price = cmp  # Default: use CMP from alert
+
     if charttype == "SPOT_OPTIONS":
         success, resolved_symbol, error_msg = resolve_option_symbol(
             symbol=symbol,
@@ -640,6 +645,28 @@ def process_tv_alert(data: dict) -> tuple:
             response = {"status": "error", "message": error_msg}
             log_tv_alert(data, response)
             return response, 500
+
+        # For SPOT_OPTIONS, CMP is the underlying price, not the option price.
+        # Fetch the option's current LTP for the LIMIT order price.
+        try:
+            from services.quotes_service import get_quotes
+            quote_success, quote_resp, _ = get_quotes(
+                symbol=resolved_symbol,
+                exchange=exchange,
+                api_key=api_key,
+            )
+            if quote_success:
+                option_ltp = quote_resp.get("data", {}).get("ltp")
+                if option_ltp:
+                    limit_price = float(option_ltp)
+                    logger.info(f"Got option LTP for LIMIT order: {limit_price} ({resolved_symbol})")
+                else:
+                    logger.warning(f"Could not get option LTP for {resolved_symbol}, using CMP {cmp}")
+            else:
+                logger.warning(f"Quote fetch failed for {resolved_symbol}, using CMP {cmp}")
+        except Exception as e:
+            logger.warning(f"Error fetching option quote for LIMIT price: {e}, using CMP {cmp}")
+
     elif charttype == "SPOT_FUTURE":
         success, resolved_symbol, error_msg = resolve_future_symbol(
             symbol=symbol,
@@ -649,9 +676,14 @@ def process_tv_alert(data: dict) -> tuple:
             response = {"status": "error", "message": error_msg}
             log_tv_alert(data, response)
             return response, 500
+        # For SPOT_FUTURE, CMP from alert is the futures price — use directly
+        limit_price = cmp
+
     elif charttype == "OPTIONS":
         # Use symbol directly as the option symbol
         resolved_symbol = symbol
+        # CMP from alert is the option price — use directly
+        limit_price = cmp
     else:
         response = {"status": "error", "message": f"Invalid charttype: {charttype}"}
         log_tv_alert(data, response)
@@ -665,6 +697,7 @@ def process_tv_alert(data: dict) -> tuple:
         sl=sl,
         target=target,
         exchange=exchange,
+        limit_price=limit_price,
     )
 
     order_success, response_data, error_msg = place_tv_alert_order(order_data)
