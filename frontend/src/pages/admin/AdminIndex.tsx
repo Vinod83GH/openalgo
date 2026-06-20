@@ -96,10 +96,10 @@ export default function AdminIndex() {
       color: 'bg-red-600',
     },
     {
-      title: 'TV Alert Options',
-      description: 'Configure TradingView alert-based options trading parameters',
+      title: 'TV Strategies',
+      description: 'Manage per-strategy TradingView alert trading parameters',
       icon: Tv,
-      href: '/admin/tv-alert-options',
+      href: '/admin/tv-strategies',
       countLabel: 'automation',
       color: 'bg-indigo-500',
     },

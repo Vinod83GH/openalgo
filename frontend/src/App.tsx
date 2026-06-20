@@ -97,7 +97,8 @@ const FreezeQty = lazy(() => import('@/pages/admin/FreezeQty'))
 const Holidays = lazy(() => import('@/pages/admin/Holidays'))
 const KillSwitch = lazy(() => import('@/pages/admin/KillSwitch'))
 const MarketTimings = lazy(() => import('@/pages/admin/MarketTimings'))
-const TvAlertOptions = lazy(() => import('@/pages/admin/TvAlertOptions'))
+const TvStrategies = lazy(() => import('@/pages/admin/TvStrategies'))
+const TvStrategyEdit = lazy(() => import('@/pages/admin/TvStrategyEdit'))
 
 // Telegram pages
 const TelegramIndex = lazy(() => import('@/pages/telegram/TelegramIndex'))
@@ -202,7 +203,8 @@ function App() {
                 <Route path="/admin/freeze" element={<FreezeQty />} />
                 <Route path="/admin/holidays" element={<Holidays />} />
                 <Route path="/admin/kill-switch" element={<KillSwitch />} />
-                <Route path="/admin/tv-alert-options" element={<TvAlertOptions />} />
+                <Route path="/admin/tv-strategies" element={<TvStrategies />} />
+                <Route path="/admin/tv-strategies/:strategyName" element={<TvStrategyEdit />} />
                 <Route path="/admin/timings" element={<MarketTimings />} />
                 {/* Phase 7: Telegram */}
                 <Route path="/telegram" element={<TelegramIndex />} />

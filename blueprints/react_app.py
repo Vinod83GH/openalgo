@@ -385,9 +385,14 @@ def react_admin_kill_switch():
     return serve_react_app()
 
 
-# Admin - TV Alert Options
-@react_bp.route("/admin/tv-alert-options", strict_slashes=False)
-def react_admin_tv_alert_options():
+# Admin - TV Strategies
+@react_bp.route("/admin/tv-strategies", strict_slashes=False)
+def react_admin_tv_strategies():
+    return serve_react_app()
+
+
+@react_bp.route("/admin/tv-strategies/<strategy_name>", strict_slashes=False)
+def react_admin_tv_strategy_edit(strategy_name):
     return serve_react_app()
 
 

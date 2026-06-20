@@ -9,9 +9,8 @@ from sqlalchemy import distinct
 
 from database.apilog_db import async_log_order, executor
 from database.auth_db import get_auth_token_broker, verify_api_key
-from database.settings_db import get_tv_alert_config
-from database.strategy_db import Strategy, db_session as strategy_db_session
 from database.symbol import SymToken, db_session as symbol_db_session
+from database.tv_strategy_db import get_strategy_by_name
 from events import OrderFailedEvent, OrderPlacedEvent
 from services.option_symbol_service import get_option_symbol
 from services.place_order_service import place_order as place_order_via_service
@@ -24,7 +23,7 @@ tv_alert_options_bp = Blueprint("tv_alert_options", __name__)
 api = Namespace("tv_alert_options", description="TradingView Alert Options Trading API")
 
 # Required fields for the TV alert payload (apikey handled separately in auth step)
-REQUIRED_FIELDS = ["cmp", "symbol", "charttype", "signal", "option_type", "sl", "target"]
+REQUIRED_FIELDS = ["strategy", "cmp", "symbol", "charttype", "signal", "option_type", "sl", "target"]
 
 # Valid enum values (stored uppercase for case-insensitive comparison)
 VALID_SIGNALS = {"BUY", "SELL"}
@@ -96,56 +95,6 @@ def authenticate_api_key(api_key: str) -> tuple:
         return False, None, "Invalid API key"
 
     return True, auth_token, None
-
-
-def check_feature_enabled() -> tuple:
-    """
-    Check if the TV Alert Options trading feature is enabled in settings.
-
-    Returns:
-        Tuple of (is_enabled, error_message)
-        - (True, None) if feature is enabled
-        - (False, "TV Alert Options trading is disabled") if disabled
-    """
-    config = get_tv_alert_config()
-    if not config.get("enabled", True):
-        return False, "TV Alert Options trading is disabled"
-
-    return True, None
-
-
-def check_strategy_active(strategy_name: str, user_id: str) -> tuple:
-    """
-    Check if the named strategy exists and is active for the given user.
-
-    Uses the existing Strategy model from strategy_db. The strategy_name is
-    configured via the TV alert settings (e.g., "TV-Alert-Options").
-
-    Args:
-        strategy_name: Name of the strategy to check
-        user_id: The authenticated user ID
-
-    Returns:
-        Tuple of (is_active, message)
-        - (True, None) if strategy exists and is_active=True
-        - (False, "Strategy 'X' not found for user") if not found
-        - (False, "Strategy 'X' is inactive, alert ignored") if found but inactive
-    """
-    try:
-        strategy = strategy_db_session.query(Strategy).filter_by(
-            name=strategy_name, user_id=user_id
-        ).first()
-    except Exception as e:
-        logger.error(f"Error querying strategy '{strategy_name}' for user '{user_id}': {e}")
-        return False, f"Strategy '{strategy_name}' not found for user"
-
-    if not strategy:
-        return False, f"Strategy '{strategy_name}' not found for user"
-
-    if not strategy.is_active:
-        return False, f"Strategy '{strategy_name}' is inactive, alert ignored"
-
-    return True, None
 
 
 def get_nearest_expiry(symbol: str, exchange: str) -> str | None:
@@ -235,17 +184,15 @@ def resolve_option_symbol(
     option_type: str,
     api_key: str,
     exchange: str,
+    strike_offset: str = "ITM2",
 ) -> tuple:
     """
-    Resolve the ITM2 option symbol for a SPOT alert.
+    Resolve the option symbol for a SPOT alert using the given strike offset.
 
-    For charttype "SPOT", this function:
+    For charttype "SPOT_OPTIONS", this function:
     1. Determines the nearest available expiry for the symbol
-    2. Calls option_symbol_service.get_option_symbol() with offset "ITM2"
+    2. Calls option_symbol_service.get_option_symbol() with the provided strike_offset
        and uses ltp_override=cmp to avoid redundant quote API calls
-
-    For charttype "OPTION", the caller should bypass this function entirely
-    and use the symbol field directly.
 
     Args:
         symbol: Underlying symbol (e.g., "NIFTY")
@@ -253,6 +200,7 @@ def resolve_option_symbol(
         option_type: "CE" or "PE"
         api_key: User's API key
         exchange: Options exchange (e.g., "NFO")
+        strike_offset: Strike selection offset (e.g., "ITM2", "ATM", "OTM1")
 
     Returns:
         Tuple of (success, resolved_symbol, error_message)
@@ -266,15 +214,13 @@ def resolve_option_symbol(
         logger.error(error_msg)
         return False, None, error_msg
 
-    # Step 2: Call option_symbol_service.get_option_symbol() with ITM2 offset
-    # strike_int=None uses the new actual-strikes method (recommended)
-    # underlying_ltp=cmp avoids a redundant quote API call
+    # Step 2: Call option_symbol_service.get_option_symbol() with the strategy's strike offset
     success, response_data, status_code = get_option_symbol(
         underlying=symbol.upper(),
         exchange=exchange.upper(),
         expiry_date=expiry,
         strike_int=None,
-        offset="ITM2",
+        offset=strike_offset,
         option_type=option_type.upper(),
         api_key=api_key,
         underlying_ltp=cmp,
@@ -295,7 +241,7 @@ def resolve_option_symbol(
 
     logger.info(
         f"Resolved option symbol: {resolved_symbol} "
-        f"(underlying={symbol}, cmp={cmp}, option_type={option_type}, expiry={expiry})"
+        f"(underlying={symbol}, cmp={cmp}, option_type={option_type}, expiry={expiry}, offset={strike_offset})"
     )
     return True, resolved_symbol, None
 
@@ -389,12 +335,14 @@ def build_order_data(
     target: float,
     exchange: str,
     limit_price: float = 0,
+    lot_size: int = 1,
+    product: str = "MIS",
 ) -> dict:
     """
     Construct the order data dictionary for place_order_service.
 
-    Uses get_tv_alert_config() to retrieve the configured quantity, product type,
-    and exchange. The signal ("BUY" or "SELL") is passed directly as the order action.
+    Uses strategy-level configuration for quantity, product, and exchange.
+    The signal ("BUY" or "SELL") is passed directly as the order action.
     Always uses LIMIT order type with the provided limit_price for broker compatibility.
 
     Args:
@@ -403,28 +351,23 @@ def build_order_data(
         signal: "BUY" or "SELL" — used directly as order action
         sl: Stop-loss points from the alert
         target: Target points from the alert
-        exchange: Trading exchange (e.g., "NFO") — override from alert or config
+        exchange: Trading exchange (e.g., "NFO")
         limit_price: The limit price for the order
+        lot_size: Number of lots from the strategy configuration
+        product: Product type from the strategy configuration (MIS/NRML)
 
     Returns:
         Order data dictionary compatible with place_order_service
     """
-    config = get_tv_alert_config()
-
-    # Use configured values from settings
-    configured_quantity = config.get("quantity", 1)
-    configured_product = config.get("product", "MIS")
-    configured_exchange = exchange or config.get("exchange", "NFO")
-
     order_data = {
         "apikey": api_key,
         "strategy": "TV Alert Options",
         "symbol": resolved_symbol,
-        "exchange": configured_exchange,
+        "exchange": exchange,
         "action": signal.upper(),
-        "quantity": str(configured_quantity),
+        "quantity": str(lot_size),
         "pricetype": "LIMIT",
-        "product": configured_product,
+        "product": product,
         "price": str(limit_price),
         "trigger_price": "0",
         "disclosed_quantity": "0",
@@ -566,13 +509,14 @@ def process_tv_alert(data: dict) -> tuple:
 
     Orchestrates the full flow:
     1. Authenticate API key
-    2. Check feature enabled
-    3. Validate payload
-    4. Check strategy is_active flag (gate)
-    5. Resolve option symbol (if SPOT charttype)
-    6. Build and place order
-    7. Log via async_log_order
-    8. Emit event bus event
+    2. Validate payload (includes "strategy" field)
+    3. Look up TvStrategy by name
+    4. Check strategy enabled gate
+    5. Check active_days gate
+    6. Resolve option symbol (if SPOT charttype) using strategy's strike_selection
+    7. Build and place order using strategy's lot_size, product, exchange
+    8. Log via async_log_order
+    9. Emit event bus event
 
     Args:
         data: Raw JSON payload from the webhook
@@ -580,7 +524,7 @@ def process_tv_alert(data: dict) -> tuple:
     Returns:
         Tuple of (response_dict, http_status_code)
     """
-    # Log incoming alert payload at INFO level (Req 1.4)
+    # Log incoming alert payload at INFO level
     logger.info(f"TV Alert received: {data}")
 
     # Step 1: Extract and authenticate API key
@@ -591,30 +535,31 @@ def process_tv_alert(data: dict) -> tuple:
         log_tv_alert(data, response)
         return response, 403
 
-    # Get user_id from the API key for strategy gate check
-    user_id = verify_api_key(api_key)
-
-    # Step 2: Check feature enabled
-    enabled, error_msg = check_feature_enabled()
-    if not enabled:
-        response = {"status": "error", "message": error_msg}
-        log_tv_alert(data, response)
-        return response, 403
-
-    # Step 3: Validate payload
+    # Step 2: Validate payload (includes "strategy" in REQUIRED_FIELDS)
     is_valid, error_msg = validate_tv_alert_payload(data)
     if not is_valid:
         response = {"status": "error", "message": error_msg}
         log_tv_alert(data, response)
         return response, 400
 
-    # Step 4: Get TV alert config and check strategy gate
-    config = get_tv_alert_config()
-    strategy_name = config.get("strategy", "TV-Alert-Options")
+    # Step 3: Look up TvStrategy by name
+    strategy_name = data.get("strategy", "").strip()
+    tv_strategy = get_strategy_by_name(strategy_name)
+    if not tv_strategy:
+        response = {"status": "error", "message": f"Unknown strategy: {strategy_name}"}
+        log_tv_alert(data, response)
+        return response, 400
 
-    is_active, message = check_strategy_active(strategy_name, user_id)
-    if not is_active:
-        response = {"status": "ignored", "message": message}
+    # Step 4: Check strategy enabled gate
+    if not tv_strategy.enabled:
+        response = {"status": "ignored", "message": f"Strategy '{strategy_name}' is disabled"}
+        log_tv_alert(data, response)
+        return response, 200
+
+    # Step 5: Check active_days gate
+    today_abbr = datetime.now().strftime("%a")
+    if today_abbr not in tv_strategy.active_days.split(","):
+        response = {"status": "ignored", "message": f"Strategy '{strategy_name}' not active on {today_abbr}"}
         log_tv_alert(data, response)
         return response, 200
 
@@ -628,9 +573,11 @@ def process_tv_alert(data: dict) -> tuple:
     cmp = float(data["cmp"])
     sl = float(data["sl"])
     target = float(data["target"])
-    exchange = str(data.get("exchange", "")).strip().upper() or config.get("exchange", "NFO")
 
-    # Step 5: Resolve symbol based on chart_type and determine limit_price
+    # Use strategy's exchange, but allow payload to override
+    exchange = str(data.get("exchange", "")).strip().upper() or tv_strategy.exchange
+
+    # Step 6: Resolve symbol based on chart_type and determine limit_price
     limit_price = cmp  # Default: use CMP from alert
 
     if charttype == "SPOT_OPTIONS":
@@ -640,6 +587,7 @@ def process_tv_alert(data: dict) -> tuple:
             option_type=option_type,
             api_key=api_key,
             exchange=exchange,
+            strike_offset=tv_strategy.strike_selection,
         )
         if not success:
             response = {"status": "error", "message": error_msg}
@@ -689,7 +637,7 @@ def process_tv_alert(data: dict) -> tuple:
         log_tv_alert(data, response)
         return response, 400
 
-    # Step 6: Build order data and place order
+    # Step 7: Build order data using strategy configuration and place order
     order_data = build_order_data(
         api_key=api_key,
         resolved_symbol=resolved_symbol,
@@ -698,11 +646,13 @@ def process_tv_alert(data: dict) -> tuple:
         target=target,
         exchange=exchange,
         limit_price=limit_price,
+        lot_size=tv_strategy.lot_size,
+        product=tv_strategy.product,
     )
 
     order_success, response_data, error_msg = place_tv_alert_order(order_data)
 
-    # Step 7: Emit event
+    # Step 8: Emit event
     emit_order_event(
         success=order_success,
         order_data=order_data,
@@ -710,7 +660,7 @@ def process_tv_alert(data: dict) -> tuple:
         error_message=error_msg,
     )
 
-    # Step 8: Build response and log
+    # Step 9: Build response and log
     if order_success:
         response = {
             "status": "success",
