@@ -1,4 +1,4 @@
-import { ArrowLeft, Plus, Trash2, Tv } from 'lucide-react'
+import { ArrowLeft, Pencil, Plus, Trash2, Tv } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { webClient } from '@/api/client'
@@ -183,19 +183,34 @@ export default function TvStrategies() {
                       <TableCell>{strategy.product}</TableCell>
                       <TableCell>{strategy.exchange}</TableCell>
                       <TableCell>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-8 w-8 text-destructive hover:text-destructive"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            setDeleteStrategy(strategy)
-                          }}
-                          title="Delete strategy"
-                          aria-label={`Delete strategy ${strategy.name}`}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                        <div className="flex gap-1">
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-8 w-8"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              navigate(`/admin/tv-strategies/${encodeURIComponent(strategy.name)}`)
+                            }}
+                            title="Edit strategy"
+                            aria-label={`Edit strategy ${strategy.name}`}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-8 w-8 text-destructive hover:text-destructive"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setDeleteStrategy(strategy)
+                            }}
+                            title="Delete strategy"
+                            aria-label={`Delete strategy ${strategy.name}`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))
