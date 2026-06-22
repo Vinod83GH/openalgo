@@ -1,6 +1,8 @@
 # blueprints/tv_alert_options.py
 
 import re
+import threading
+import time
 from datetime import datetime
 
 from flask import Blueprint, request
@@ -21,6 +23,12 @@ logger = get_logger(__name__)
 
 tv_alert_options_bp = Blueprint("tv_alert_options", __name__)
 api = Namespace("tv_alert_options", description="TradingView Alert Options Trading API")
+
+# Deduplication: prevent duplicate orders from TradingView retries
+# Key = "strategy|symbol|signal|charttype", Value = timestamp of last processed alert
+_dedup_cache: dict[str, float] = {}
+_dedup_lock = threading.Lock()
+DEDUP_COOLDOWN_SECONDS = 30  # Reject duplicate alerts within 30 seconds
 
 # Required fields for the TV alert payload (apikey handled separately in auth step)
 REQUIRED_FIELDS = ["strategy", "cmp", "symbol", "charttype", "signal", "option_type", "sl", "target"]
@@ -585,11 +593,36 @@ def process_tv_alert(data: dict) -> tuple:
         log_tv_alert(data, response)
         return response, 200
 
-    # Normalize input values
+    # Step 5b: Deduplication — reject duplicate alerts within cooldown window
     charttype = str(data["charttype"]).strip().upper()
     signal = str(data["signal"]).strip().upper()
+    symbol_raw = str(data["symbol"]).strip()
+    dedup_key = f"{strategy_name}|{symbol_raw}|{signal}|{charttype}"
+    now = time.time()
+
+    with _dedup_lock:
+        last_time = _dedup_cache.get(dedup_key)
+        if last_time and (now - last_time) < DEDUP_COOLDOWN_SECONDS:
+            elapsed = round(now - last_time, 1)
+            response = {
+                "status": "ignored",
+                "message": f"Duplicate alert ignored (same signal received {elapsed}s ago, cooldown={DEDUP_COOLDOWN_SECONDS}s)",
+            }
+            logger.warning(f"Dedup rejected: {dedup_key} ({elapsed}s since last)")
+            log_tv_alert(data, response)
+            return response, 200
+        # Mark this alert as processed
+        _dedup_cache[dedup_key] = now
+
+        # Clean old entries (older than 2x cooldown)
+        cutoff = now - (DEDUP_COOLDOWN_SECONDS * 2)
+        expired_keys = [k for k, v in _dedup_cache.items() if v < cutoff]
+        for k in expired_keys:
+            del _dedup_cache[k]
+
+    # Normalize input values
     option_type = str(data["option_type"]).strip().upper()
-    symbol = str(data["symbol"]).strip()
+    symbol = symbol_raw
     # Strip TradingView continuous contract suffixes (e.g., "1!", "2!")
     symbol = re.sub(r'\d+!$', '', symbol)
     cmp = float(data["cmp"])
