@@ -359,13 +359,35 @@ def build_order_data(
     Returns:
         Order data dictionary compatible with place_order_service
     """
+    # Look up the instrument's lot size from SymToken to calculate actual quantity
+    # lot_size from strategy = number of lots, needs to be multiplied by instrument lotsize
+    actual_quantity = lot_size  # Default: use lot_size as-is
+    try:
+        sym_record = symbol_db_session.query(SymToken).filter_by(
+            symbol=resolved_symbol, exchange=exchange
+        ).first()
+        if sym_record and sym_record.lotsize:
+            instrument_lotsize = int(sym_record.lotsize)
+            actual_quantity = lot_size * instrument_lotsize
+            logger.info(
+                f"Quantity calculation: {lot_size} lots × {instrument_lotsize} "
+                f"(instrument lot size) = {actual_quantity} for {resolved_symbol}"
+            )
+        else:
+            logger.warning(
+                f"Could not find lotsize for {resolved_symbol} on {exchange}, "
+                f"using lot_size={lot_size} directly as quantity"
+            )
+    except Exception as e:
+        logger.warning(f"Error looking up lotsize for {resolved_symbol}: {e}")
+
     order_data = {
         "apikey": api_key,
         "strategy": "TV Alert Options",
         "symbol": resolved_symbol,
         "exchange": exchange,
         "action": signal.upper(),
-        "quantity": str(lot_size),
+        "quantity": str(actual_quantity),
         "pricetype": "LIMIT",
         "product": product,
         "price": str(limit_price),
