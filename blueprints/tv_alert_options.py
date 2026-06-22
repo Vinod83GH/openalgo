@@ -687,7 +687,7 @@ class TvAlertOptionsResource(Resource):
     def post(self):
         """Process a TradingView alert for options trading"""
         try:
-            data = request.json
+            data = request.get_json(force=True, silent=True)
             if not data:
                 return {"status": "error", "message": "Invalid payload: expected a JSON object"}, 400
 
