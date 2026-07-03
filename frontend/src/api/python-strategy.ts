@@ -49,7 +49,8 @@ export const pythonStrategyApi = {
       start_time: string
       stop_time: string
       days: string[]
-    }
+    },
+    envVars?: Record<string, string>
   ): Promise<ApiResponse<{ strategy_id: string }>> => {
     const formData = new FormData()
     formData.append('strategy_name', name)
@@ -58,6 +59,10 @@ export const pythonStrategyApi = {
     formData.append('schedule_start', schedule.start_time)
     formData.append('schedule_stop', schedule.stop_time)
     formData.append('schedule_days', JSON.stringify(schedule.days))
+    // Add env vars if provided
+    if (envVars && Object.keys(envVars).length > 0) {
+      formData.append('env_vars', JSON.stringify(envVars))
+    }
 
     const response = await webClient.post<ApiResponse<{ strategy_id: string }>>(
       '/python/new',

@@ -8,8 +8,16 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
+import StrategyParametersSection from '@/components/python-strategy/StrategyParametersSection'
 import type { PythonStrategy } from '@/types/python-strategy'
 import { SCHEDULE_DAYS } from '@/types/python-strategy'
+import type { StrategyEnvVars } from '@/utils/strategy-env-validation'
+import {
+  envVarsToFormState,
+  formStateToEnvVars,
+  validateLots,
+  validateTimeFormat,
+} from '@/utils/strategy-env-validation'
 
 export default function SchedulePythonStrategy() {
   const { strategyId } = useParams<{ strategyId: string }>()
@@ -20,6 +28,10 @@ export default function SchedulePythonStrategy() {
   const [startTime, setStartTime] = useState('09:15')
   const [stopTime, setStopTime] = useState('15:30')
   const [selectedDays, setSelectedDays] = useState<string[]>(['mon', 'tue', 'wed', 'thu', 'fri'])
+
+  // Strategy parameters (env vars) form state
+  const [envState, setEnvState] = useState<StrategyEnvVars>(envVarsToFormState({}))
+  const [errors, setErrors] = useState<Record<string, string>>({})
 
   useEffect(() => {
     const fetchStrategy = async () => {
@@ -32,6 +44,10 @@ export default function SchedulePythonStrategy() {
         if (data.schedule_start_time) setStartTime(data.schedule_start_time)
         if (data.schedule_stop_time) setStopTime(data.schedule_stop_time)
         if (data.schedule_days?.length) setSelectedDays(data.schedule_days)
+        // Pre-fill env vars from strategy detail API response
+        if (data.env_vars) {
+          setEnvState(envVarsToFormState(data.env_vars))
+        }
       } catch (error) {
         showToast.error('Failed to load strategy', 'pythonStrategy')
         navigate('/python')
@@ -53,6 +69,8 @@ export default function SchedulePythonStrategy() {
     e.preventDefault()
 
     if (!strategyId) return
+
+    // Validate schedule fields
     if (selectedDays.length === 0) {
       showToast.error('Please select at least one day', 'pythonStrategy')
       return
@@ -66,12 +84,48 @@ export default function SchedulePythonStrategy() {
       return
     }
 
+    // Validate strategy parameters (env vars)
+    const newErrors: Record<string, string> = {}
+
+    const lotsError = validateLots(envState.STRATEGY_LOTS)
+    if (lotsError) {
+      newErrors.STRATEGY_LOTS = lotsError
+    }
+
+    const entryStartError = validateTimeFormat(envState.STRATEGY_ENTRY_START)
+    if (entryStartError) {
+      newErrors.STRATEGY_ENTRY_START = entryStartError
+    }
+
+    const entryEndError = validateTimeFormat(envState.STRATEGY_ENTRY_END)
+    if (entryEndError) {
+      newErrors.STRATEGY_ENTRY_END = entryEndError
+    }
+
+    const exitTimeError = validateTimeFormat(envState.STRATEGY_EXIT_TIME)
+    if (exitTimeError) {
+      newErrors.STRATEGY_EXIT_TIME = exitTimeError
+    }
+
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors)
+      showToast.error('Please fix the form errors', 'pythonStrategy')
+      return
+    }
+
+    // Clear any previous errors
+    setErrors({})
+
     try {
       setSaving(true)
+      // Convert env state to env_vars dict (filters empty values)
+      const envVars = formStateToEnvVars(envState)
+
       const response = await pythonStrategyApi.scheduleStrategy(strategyId, {
         start_time: startTime,
         stop_time: stopTime,
         days: selectedDays,
+        env_vars: envVars,
       })
 
       if (response.status === 'success') {
@@ -101,7 +155,9 @@ export default function SchedulePythonStrategy() {
     return null
   }
 
-  if (strategy.status === 'running') {
+  const isRunning = strategy.status === 'running'
+
+  if (isRunning) {
     return (
       <div className="container mx-auto py-6 max-w-2xl space-y-6">
         <Button variant="ghost" asChild>
@@ -239,6 +295,14 @@ export default function SchedulePythonStrategy() {
                 Every Day
               </Button>
             </div>
+
+            {/* Strategy Parameters Section */}
+            <StrategyParametersSection
+              values={envState}
+              onChange={setEnvState}
+              disabled={isRunning}
+              errors={errors}
+            />
 
             {/* Submit */}
             <div className="flex gap-3 pt-4">

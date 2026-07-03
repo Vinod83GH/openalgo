@@ -37,6 +37,7 @@ from werkzeug.utils import secure_filename
 
 from database.market_calendar_db import get_market_hours_status, is_market_holiday, is_market_open
 from utils.session import check_session_validity
+from utils.strategy_env import build_subprocess_env, validate_env_vars
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -456,6 +457,19 @@ def start_strategy_process(strategy_id):
             subprocess_args["stdout"] = log_handle
             subprocess_args["stderr"] = subprocess.STDOUT
             subprocess_args["cwd"] = str(Path.cwd())
+
+            # Build merged environment with strategy-specific env vars
+            strategy_env_vars = config.get("env_vars", {})
+            if not isinstance(strategy_env_vars, dict):
+                logger.warning(
+                    f"Strategy {strategy_id} has corrupted env_vars (type={type(strategy_env_vars).__name__}), "
+                    f"falling back to empty dict"
+                )
+                strategy_env_vars = {}
+            merged_env = build_subprocess_env(strategy_env_vars)
+            subprocess_args["env"] = merged_env
+            if strategy_env_vars:
+                logger.info(f"Injecting env vars for {strategy_id}: {list(strategy_env_vars.keys())}")
 
             # Start the process
             # Use Python unbuffered mode for real-time output
@@ -1490,6 +1504,23 @@ def new_strategy():
             if not schedule_days:
                 schedule_days = ["mon", "tue", "wed", "thu", "fri"]
 
+            # Parse and validate env_vars
+            raw_env_vars = request.form.get("env_vars", "{}")
+            try:
+                env_vars_data = json.loads(raw_env_vars)
+            except json.JSONDecodeError:
+                if is_ajax:
+                    return jsonify({"status": "error", "message": "Invalid env_vars JSON"}), 400
+                flash("Invalid env_vars JSON", "error")
+                return redirect(request.url)
+
+            is_valid, error_msg, sanitized_vars = validate_env_vars(env_vars_data)
+            if not is_valid:
+                if is_ajax:
+                    return jsonify({"status": "error", "message": error_msg}), 400
+                flash(error_msg, "error")
+                return redirect(request.url)
+
             # Save configuration with schedule (schedule is mandatory and always enabled)
             STRATEGY_CONFIGS[strategy_id] = {
                 "name": strategy_name,
@@ -1502,6 +1533,7 @@ def new_strategy():
                 "schedule_start": schedule_start,
                 "schedule_stop": schedule_stop,
                 "schedule_days": schedule_days,
+                "env_vars": sanitized_vars,
             }
             save_configs()
 
@@ -1705,6 +1737,14 @@ def schedule_strategy_route(strategy_id):
 
     if not start_time:
         return jsonify({"status": "error", "message": "Start time is required"}), 400
+
+    # Handle env_vars update (optional - only update if present in request)
+    if "env_vars" in data:
+        is_valid, error_msg, sanitized_vars = validate_env_vars(data["env_vars"])
+        if not is_valid:
+            return jsonify({"status": "error", "message": error_msg}), 400
+        STRATEGY_CONFIGS[strategy_id]["env_vars"] = sanitized_vars
+        save_configs()
 
     try:
         schedule_strategy(strategy_id, start_time, stop_time, days)
@@ -2170,6 +2210,7 @@ def api_get_strategy(strategy_id):
                 "paused_message": config.get("paused_message"),
                 "process_id": config.get("process_id"),
                 "created_at": config.get("created_at"),
+                "env_vars": config.get("env_vars", {}),
             }
         }
     )
@@ -2464,6 +2505,63 @@ def save_strategy(strategy_id):
     except Exception as e:
         logger.exception(f"Failed to save strategy {strategy_id}: {e}")
         return jsonify({"status": "error", "message": f"Failed to save: {str(e)}"}), 500
+
+
+@python_strategy_bp.route("/env/<strategy_id>", methods=["GET"])
+@check_session_validity
+def get_env_vars(strategy_id):
+    """Get environment variables for a strategy"""
+    user_id = session.get("user")
+    if not user_id:
+        return jsonify({"status": "error", "message": "Session expired"}), 401
+
+    # Verify ownership
+    is_owner, result = verify_strategy_ownership(strategy_id, user_id, return_config=True)
+    if not is_owner:
+        return result
+
+    config = result
+    return jsonify({"regular": config.get("env_vars", {}), "secure": {}})
+
+
+@python_strategy_bp.route("/env/<strategy_id>", methods=["POST"])
+@check_session_validity
+def save_env_vars(strategy_id):
+    """Save environment variables for a strategy"""
+    user_id = session.get("user")
+    if not user_id:
+        return jsonify({"status": "error", "message": "Session expired"}), 401
+
+    # Verify ownership
+    is_owner, result = verify_strategy_ownership(strategy_id, user_id, return_config=True)
+    if not is_owner:
+        return result
+
+    config = result
+
+    # Check strategy is not running
+    if config.get("is_running", False):
+        return jsonify(
+            {"status": "error", "message": "Cannot modify while strategy is running"}
+        ), 400
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"status": "error", "message": "No data provided"}), 400
+
+    # Accept {"regular": {...}, "secure": {...}} format
+    regular_vars = data.get("regular", {})
+
+    # Validate the regular env vars dict
+    is_valid, error_msg, sanitized_vars = validate_env_vars(regular_vars)
+    if not is_valid:
+        return jsonify({"status": "error", "message": error_msg}), 400
+
+    # Store in config and save
+    STRATEGY_CONFIGS[strategy_id]["env_vars"] = sanitized_vars
+    save_configs()
+
+    return jsonify({"status": "success", "message": "Environment variables saved"})
 
 
 # Cleanup on shutdown
