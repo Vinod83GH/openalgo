@@ -23,6 +23,13 @@ from database.qty_freeze_db import (
     load_freeze_qty_from_csv,
 )
 from database.qty_freeze_db import db_session as freeze_db_session
+from database.tv_strategy_db import (
+    create_strategy,
+    delete_strategy,
+    get_all_strategies,
+    get_strategy_by_name,
+    update_strategy,
+)
 from limiter import limiter
 from utils.logging import get_logger
 from utils.session import check_session_validity
@@ -582,3 +589,120 @@ def api_timings_check():
     except Exception as e:
         logger.exception(f"Error checking timings: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ============================================================================
+# TV Strategy CRUD API Endpoints
+# ============================================================================
+
+
+def _serialize_strategy(s) -> dict:
+    """Convert a TvStrategy model instance to a JSON-serializable dict."""
+    return {
+        "name": s.name,
+        "active_days": s.active_days.split(",") if s.active_days else [],
+        "lot_size": s.lot_size,
+        "strike_selection": s.strike_selection,
+        "enabled": s.enabled,
+        "product": s.product,
+        "exchange": s.exchange,
+    }
+
+
+def _extract_strategy_fields(data: dict) -> dict:
+    """Parse request body into validated fields dict for create/update operations."""
+    fields = {}
+    if "active_days" in data:
+        days = data["active_days"]
+        if isinstance(days, list):
+            fields["active_days"] = ",".join(days)
+        else:
+            fields["active_days"] = str(days)
+    if "lot_size" in data:
+        fields["lot_size"] = int(data["lot_size"])
+    if "strike_selection" in data:
+        fields["strike_selection"] = str(data["strike_selection"]).strip().upper()
+    if "enabled" in data:
+        fields["enabled"] = bool(data["enabled"])
+    if "product" in data:
+        fields["product"] = str(data["product"]).strip().upper()
+    if "exchange" in data:
+        fields["exchange"] = str(data["exchange"]).strip().upper()
+    return fields
+
+
+@admin_bp.route("/api/tv-strategies")
+@check_session_validity
+@limiter.limit(API_RATE_LIMIT)
+def api_tv_strategies_list():
+    """GET: Return all TvStrategy records as JSON array."""
+    strategies = get_all_strategies()
+    return jsonify({
+        "status": "success",
+        "data": [_serialize_strategy(s) for s in strategies],
+    })
+
+
+@admin_bp.route("/api/tv-strategies/<name>")
+@check_session_validity
+@limiter.limit(API_RATE_LIMIT)
+def api_tv_strategy_get(name):
+    """GET: Return single TvStrategy by name."""
+    strategy = get_strategy_by_name(name)
+    if not strategy:
+        return jsonify({"status": "error", "message": f"Strategy '{name}' not found"}), 404
+    return jsonify({"status": "success", "data": _serialize_strategy(strategy)})
+
+
+@admin_bp.route("/api/tv-strategies", methods=["POST"])
+@check_session_validity
+@limiter.limit(API_RATE_LIMIT)
+def api_tv_strategy_create():
+    """POST: Create a new TvStrategy."""
+    data = request.get_json()
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"status": "error", "message": "Strategy name is required"}), 400
+
+    if get_strategy_by_name(name):
+        return jsonify({"status": "error", "message": f"Strategy '{name}' already exists"}), 409
+
+    fields = _extract_strategy_fields(data)
+    try:
+        strategy = create_strategy(name, **fields)
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+    return jsonify({"status": "success", "data": _serialize_strategy(strategy)}), 201
+
+
+@admin_bp.route("/api/tv-strategies/<name>", methods=["PUT"])
+@check_session_validity
+@limiter.limit(API_RATE_LIMIT)
+def api_tv_strategy_update(name):
+    """PUT: Update an existing TvStrategy."""
+    strategy = get_strategy_by_name(name)
+    if not strategy:
+        return jsonify({"status": "error", "message": f"Strategy '{name}' not found"}), 404
+
+    data = request.get_json()
+    fields = _extract_strategy_fields(data)
+    try:
+        strategy = update_strategy(strategy, **fields)
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+    return jsonify({"status": "success", "data": _serialize_strategy(strategy)})
+
+
+@admin_bp.route("/api/tv-strategies/<name>", methods=["DELETE"])
+@check_session_validity
+@limiter.limit(API_RATE_LIMIT)
+def api_tv_strategy_delete(name):
+    """DELETE: Remove a TvStrategy."""
+    strategy = get_strategy_by_name(name)
+    if not strategy:
+        return jsonify({"status": "error", "message": f"Strategy '{name}' not found"}), 404
+
+    delete_strategy(strategy)
+    return jsonify({"status": "success", "message": f"Strategy '{name}' deleted"})
