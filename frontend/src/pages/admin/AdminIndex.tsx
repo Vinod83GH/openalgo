@@ -7,6 +7,7 @@ import {
   Shield,
   ShieldOff,
   Snowflake,
+  Tv,
   Zap,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
@@ -93,6 +94,14 @@ export default function AdminIndex() {
       href: '/admin/kill-switch',
       countLabel: 'risk control',
       color: 'bg-red-600',
+    },
+    {
+      title: 'TV Strategies',
+      description: 'Manage per-strategy TradingView alert trading parameters',
+      icon: Tv,
+      href: '/admin/tv-strategies',
+      countLabel: 'automation',
+      color: 'bg-indigo-500',
     },
   ]
 

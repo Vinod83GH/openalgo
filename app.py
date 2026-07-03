@@ -187,6 +187,7 @@ from database.chartink_db import init_db as ensure_chartink_tables_exists
 from database.flow_db import init_db as ensure_flow_tables_exists
 from database.kill_switch_db import init_db as kill_switch_init_db
 from database.broker_credentials_db import init_db as broker_credentials_init_db
+from database.tv_strategy_db import init_db as tv_strategy_init_db
 from database.historify_db import init_database as ensure_historify_tables_exists
 from database.latency_db import init_latency_db as ensure_latency_tables_exists
 from database.leverage_db import init_db as ensure_leverage_tables_exists
@@ -606,6 +607,7 @@ def setup_environment(app):
                 ("Leverage DB", ensure_leverage_tables_exists),
                 ("Kill Switch DB", kill_switch_init_db),
                 ("Broker Credentials DB", broker_credentials_init_db),
+                ("TV Strategy DB", tv_strategy_init_db),
             ]
 
             db_init_start = time.time()
