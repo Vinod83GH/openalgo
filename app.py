@@ -133,6 +133,7 @@ from blueprints.broker_credentials_store import (
 )
 from blueprints.broker_session import broker_session_bp  # Import the broker session blueprint
 from blueprints.kill_switch import kill_switch_bp  # Import the kill switch blueprint
+from blueprints.paper_journal import paper_journal_bp  # Import the paper journal blueprint
 from blueprints.chartink import chartink_bp  # Import the chartink blueprint
 from blueprints.core import core_bp
 from blueprints.dashboard import dashboard_bp
@@ -186,6 +187,7 @@ from database.auth_db import init_db as ensure_auth_tables_exists
 from database.chartink_db import init_db as ensure_chartink_tables_exists
 from database.flow_db import init_db as ensure_flow_tables_exists
 from database.kill_switch_db import init_db as kill_switch_init_db
+from database.paper_trade_db import init_db as paper_trade_init_db
 from database.broker_credentials_db import init_db as broker_credentials_init_db
 from database.historify_db import init_database as ensure_historify_tables_exists
 from database.latency_db import init_latency_db as ensure_latency_tables_exists
@@ -375,6 +377,10 @@ def create_app():
     app.register_blueprint(broker_session_bp)  # Register Broker session management blueprint
     app.register_blueprint(system_permissions_bp)  # Register System permissions blueprint
     app.register_blueprint(kill_switch_bp)  # Register Kill Switch blueprint
+    app.register_blueprint(paper_journal_bp)  # Register Paper Journal blueprint
+
+    # Exempt paper journal API from CSRF (uses API key authentication)
+    csrf.exempt(paper_journal_bp)
 
     # Exempt webhook endpoints from CSRF protection after app initialization
     with app.app_context():
@@ -605,6 +611,7 @@ def setup_environment(app):
                 ("Flow DB", ensure_flow_tables_exists),
                 ("Leverage DB", ensure_leverage_tables_exists),
                 ("Kill Switch DB", kill_switch_init_db),
+                ("Paper Trade DB", paper_trade_init_db),
                 ("Broker Credentials DB", broker_credentials_init_db),
             ]
 

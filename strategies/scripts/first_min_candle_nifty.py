@@ -1,0 +1,497 @@
+#!/usr/bin/env python
+"""
+First 1-Minute Candle Strategy - Index Options (NIFTY/BANKNIFTY)
+================================================================
+Strategy Logic:
+1. Wait for 1st 1-min candle to close (9:15-9:16)
+2. Mark its High and Low
+3. Determine bias:
+   - Close ABOVE midpoint (bullish) → wait for retracement to High → BUY CALL
+   - Close BELOW midpoint (bearish) → wait for retracement to Low → BUY PUT
+4. Stop-loss: opposite side of 1st candle
+5. Auto-exit at configured exit time
+
+Configuration (via Environment Variables on Python Strategy page):
+  STRATEGY_SYMBOL     = NIFTY | BANKNIFTY          (default: NIFTY)
+  STRATEGY_STRIKE     = ITM3|ITM2|ITM1|ATM|OTM1|OTM2|OTM3  (default: ITM2)
+  STRATEGY_LOTS       = Number of lots              (default: 1)
+  STRATEGY_ENTRY_START = HH:MM entry window start  (default: 09:16)
+  STRATEGY_ENTRY_END  = HH:MM entry window end     (default: 10:30)
+  STRATEGY_EXIT_TIME  = HH:MM force exit time      (default: 15:15)
+  STRATEGY_PRODUCT    = MIS | NRML                  (default: MIS)
+  STRATEGY_EXCHANGE   = NFO | BFO                   (default: NFO)
+"""
+
+import os
+import time
+import requests
+from datetime import datetime, timedelta
+
+from openalgo import api
+
+
+# ============================================================
+# PAPER JOURNAL CLIENT
+# ============================================================
+
+class PaperJournalClient:
+    """Lightweight REST client for the Paper Trade Journal service."""
+
+    def __init__(self, api_key: str, host: str):
+        self.api_key = api_key
+        self.host = host.rstrip("/")
+        self._active = None  # Cached mode status
+
+    def is_active(self) -> bool:
+        """Check if app is in Analyzer mode by querying the journal status endpoint."""
+        try:
+            resp = requests.get(
+                f"{self.host}/api/v1/paperjournal/status",
+                params={"apikey": self.api_key},
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                mode = data.get("data", {}).get("mode", "")
+                self._active = mode == "analyze"
+            else:
+                self._active = False
+        except Exception:
+            self._active = False
+        return self._active
+
+    def open_trade(self, **kwargs) -> int | None:
+        """Open a new trade record. Returns trade_id or None on failure."""
+        try:
+            payload = {"apikey": self.api_key, **kwargs}
+            resp = requests.post(
+                f"{self.host}/api/v1/paperjournal/trade",
+                json=payload,
+                timeout=10,
+            )
+            if resp.status_code == 201:
+                data = resp.json()
+                return data.get("data", {}).get("trade_id")
+        except Exception:
+            pass
+        return None
+
+    def close_trade(self, trade_id: int, **kwargs) -> bool:
+        """Close/update an existing trade. Returns True on success."""
+        try:
+            payload = {"apikey": self.api_key, **kwargs}
+            resp = requests.patch(
+                f"{self.host}/api/v1/paperjournal/trade/{trade_id}",
+                json=payload,
+                timeout=10,
+            )
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+# ============================================================
+# CONFIGURATION — Read from environment variables
+# ============================================================
+
+API_KEY = os.getenv("OPENALGO_APIKEY")
+if not API_KEY:
+    print("Error: OPENALGO_APIKEY environment variable not set")
+    exit(1)
+
+HOST = os.getenv("OPENALGO_HOST", "http://127.0.0.1:5000")
+
+# Strategy parameters (configurable from Python Strategy page env vars)
+SYMBOL = os.getenv("STRATEGY_SYMBOL", "NIFTY")
+STRIKE_SELECTION = os.getenv("STRATEGY_STRIKE", "ITM2")
+LOTS = int(os.getenv("STRATEGY_LOTS", "1"))
+ENTRY_START = os.getenv("STRATEGY_ENTRY_START", "09:16")
+ENTRY_END = os.getenv("STRATEGY_ENTRY_END", "10:30")
+EXIT_TIME = os.getenv("STRATEGY_EXIT_TIME", "15:15")
+PRODUCT = os.getenv("STRATEGY_PRODUCT", "MIS")
+EXCHANGE = os.getenv("STRATEGY_EXCHANGE", "NFO")
+
+# Derived
+STRATEGY_NAME = f"FirstMinCandle-{SYMBOL}"
+SPOT_EXCHANGE = "NSE"  # Spot data always from NSE
+
+# Lot sizes (will be fetched from API, these are fallbacks)
+LOT_SIZES = {"NIFTY": 65, "BANKNIFTY": 30}
+
+# Parse time configs
+def parse_time(time_str):
+    parts = time_str.split(":")
+    return int(parts[0]), int(parts[1])
+
+ENTRY_START_H, ENTRY_START_M = parse_time(ENTRY_START)
+ENTRY_END_H, ENTRY_END_M = parse_time(ENTRY_END)
+EXIT_H, EXIT_M = parse_time(EXIT_TIME)
+
+# API client
+client = api(api_key=API_KEY, host=HOST)
+
+# Paper Journal client
+journal = PaperJournalClient(api_key=API_KEY, host=HOST)
+
+# ============================================================
+# STATE
+# ============================================================
+
+first_candle_high = None
+first_candle_low = None
+first_candle_close = None
+first_candle_mid = None
+bias = None
+entry_done = False
+option_symbol = None
+option_exchange = None
+actual_quantity = None
+journal_trade_id = None
+
+
+def log(msg):
+    """Print with timestamp."""
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+
+
+def resolve_option_symbol(option_type, spot_ltp):
+    """
+    Use the /api/v1/optionsymbol API to resolve the correct option contract.
+    Returns (symbol, exchange, lotsize) or (None, None, None) on failure.
+    """
+    url = f"{HOST}/api/v1/optionsymbol"
+    payload = {
+        "apikey": API_KEY,
+        "underlying": SYMBOL,
+        "exchange": SPOT_EXCHANGE,
+        "offset": STRIKE_SELECTION,
+        "option_type": option_type,
+    }
+
+    log(f"Resolving option: {SYMBOL} {option_type} {STRIKE_SELECTION} (LTP={spot_ltp})...")
+
+    try:
+        resp = requests.post(url, json=payload, timeout=10)
+        data = resp.json()
+
+        if data.get("status") == "success":
+            sym = data.get("symbol")
+            exch = data.get("exchange", EXCHANGE)
+            lotsize = data.get("lotsize", LOT_SIZES.get(SYMBOL, 75))
+            log(f"  ✅ Resolved: {sym} on {exch} (lot={lotsize})")
+            return sym, exch, int(lotsize)
+        else:
+            log(f"  ❌ Resolution failed: {data.get('message', 'Unknown error')}")
+            return None, None, None
+    except Exception as e:
+        log(f"  ❌ API error: {e}")
+        return None, None, None
+
+
+def wait_for_time(hour, minute, label=""):
+    """Wait until the specified time."""
+    while True:
+        now = datetime.now()
+        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if now >= target:
+            return
+        wait_secs = (target - now).total_seconds()
+        if wait_secs > 60:
+            log(f"Waiting {wait_secs:.0f}s for {label} ({hour:02d}:{minute:02d})...")
+        time.sleep(min(wait_secs, 30))
+
+
+def is_past_time(hour, minute):
+    """Check if current time is past the given time."""
+    now = datetime.now()
+    return now.hour > hour or (now.hour == hour and now.minute >= minute)
+
+
+def get_first_candle():
+    """Capture the 1st 1-minute candle after it closes."""
+    global first_candle_high, first_candle_low, first_candle_close, first_candle_mid, bias
+
+    log("Waiting for 1st minute candle to close...")
+    wait_for_time(ENTRY_START_H, ENTRY_START_M, "1st candle close")
+
+    # Extra 5 seconds to ensure candle is fully formed
+    time.sleep(5)
+
+    # Fetch today's 1-min data
+    end_date = datetime.now().strftime("%Y-%m-%d")
+    start_date = end_date
+
+    for attempt in range(5):
+        try:
+            df = client.history(
+                symbol=SYMBOL,
+                exchange=SPOT_EXCHANGE,
+                interval="1m",
+                start_date=start_date,
+                end_date=end_date,
+            )
+
+            if df is None or df.empty:
+                log(f"  Empty data, retry {attempt + 1}/5...")
+                time.sleep(3)
+                continue
+
+            # Get today's data
+            if hasattr(df.index, 'date'):
+                today_data = df[df.index.date == datetime.now().date()]
+            else:
+                today_data = df
+
+            if today_data.empty:
+                log(f"  No today's data, retry {attempt + 1}/5...")
+                time.sleep(3)
+                continue
+
+            # First candle
+            candle = today_data.iloc[0]
+            first_candle_high = round(float(candle["high"]), 2)
+            first_candle_low = round(float(candle["low"]), 2)
+            first_candle_close = round(float(candle["close"]), 2)
+            first_candle_mid = round((first_candle_high + first_candle_low) / 2, 2)
+
+            # Determine bias
+            bias = "BULLISH" if first_candle_close > first_candle_mid else "BEARISH"
+
+            log(f"")
+            log(f"{'='*50}")
+            log(f"  1st CANDLE: H={first_candle_high} L={first_candle_low} C={first_candle_close}")
+            log(f"  Midpoint: {first_candle_mid} | Bias: {bias}")
+            log(f"{'='*50}")
+
+            if bias == "BULLISH":
+                log(f"  Plan: Wait for retracement to HIGH ({first_candle_high}) → BUY CALL {STRIKE_SELECTION}")
+                log(f"  SL: Spot drops below LOW ({first_candle_low})")
+            else:
+                log(f"  Plan: Wait for retracement to LOW ({first_candle_low}) → BUY PUT {STRIKE_SELECTION}")
+                log(f"  SL: Spot rises above HIGH ({first_candle_high})")
+            log(f"")
+            return True
+
+        except Exception as e:
+            log(f"  Error: {e}, retry {attempt + 1}/5...")
+            time.sleep(3)
+
+    log("Failed to capture 1st candle. Aborting.")
+    return False
+
+
+def get_spot_ltp():
+    """Get current spot LTP."""
+    try:
+        quotes = client.quotes(symbol=SYMBOL, exchange=SPOT_EXCHANGE)
+        if quotes and "ltp" in quotes:
+            return float(quotes["ltp"])
+    except Exception as e:
+        log(f"  Quote error: {e}")
+    return None
+
+
+def place_entry(option_type):
+    """Resolve option and place entry order."""
+    global entry_done, option_symbol, option_exchange, actual_quantity, journal_trade_id
+
+    spot_ltp = get_spot_ltp()
+    if spot_ltp is None:
+        log("Cannot get spot LTP for option resolution")
+        return False
+
+    # Resolve option symbol via API
+    sym, exch, lotsize = resolve_option_symbol(option_type, spot_ltp)
+    if sym is None:
+        log("Option resolution failed. Skipping entry.")
+        return False
+
+    option_symbol = sym
+    option_exchange = exch
+    actual_quantity = LOTS * lotsize
+
+    log(f"")
+    log(f"🚀 ENTRY: BUY {option_symbol} | Qty={actual_quantity} ({LOTS} lots × {lotsize})")
+
+    try:
+        response = client.placesmartorder(
+            strategy=STRATEGY_NAME,
+            symbol=option_symbol,
+            action="BUY",
+            exchange=option_exchange,
+            price_type="MARKET",
+            product=PRODUCT,
+            quantity=actual_quantity,
+            position_size=actual_quantity,
+        )
+        log(f"  Order Response: {response}")
+        entry_done = True
+
+        # Log trade to paper journal if in Analyzer mode
+        try:
+            if journal.is_active():
+                trade_id = journal.open_trade(
+                    strategy_name=STRATEGY_NAME,
+                    direction=bias,
+                    trade_date=datetime.now().strftime("%Y-%m-%d"),
+                    entry_time=datetime.now().isoformat(),
+                    entry_spot_price=spot_ltp,
+                    entry_option_symbol=option_symbol,
+                    entry_quantity=actual_quantity,
+                    entry_action="BUY",
+                    custom_metadata={
+                        "first_candle_high": first_candle_high,
+                        "first_candle_low": first_candle_low,
+                        "first_candle_close": first_candle_close,
+                        "first_candle_mid": first_candle_mid,
+                        "bias": bias,
+                    },
+                )
+                if trade_id:
+                    journal_trade_id = trade_id
+                    log(f"  📓 Journal: Trade opened (ID={trade_id})")
+                else:
+                    log(f"  📓 Journal: open_trade returned no ID")
+        except Exception as e:
+            log(f"  📓 Journal: Error logging entry - {e}")
+
+        return True
+    except Exception as e:
+        log(f"  Order Error: {e}")
+        return False
+
+
+def place_exit(reason=""):
+    """Exit the position."""
+    if not entry_done or not option_symbol:
+        return
+
+    log(f"")
+    log(f"🛑 EXIT ({reason}): SELL {option_symbol} | Qty={actual_quantity}")
+
+    try:
+        response = client.placesmartorder(
+            strategy=STRATEGY_NAME,
+            symbol=option_symbol,
+            action="SELL",
+            exchange=option_exchange,
+            price_type="MARKET",
+            product=PRODUCT,
+            quantity=actual_quantity,
+            position_size=0,
+        )
+        log(f"  Exit Response: {response}")
+    except Exception as e:
+        log(f"  Exit Error: {e}")
+
+    # Log exit to paper journal if in Analyzer mode
+    try:
+        if journal_trade_id and journal.is_active():
+            spot_ltp = get_spot_ltp()
+            success = journal.close_trade(
+                journal_trade_id,
+                exit_time=datetime.now().isoformat(),
+                exit_spot_price=spot_ltp,
+                exit_reason=reason,
+            )
+            if success:
+                log(f"  📓 Journal: Trade closed (ID={journal_trade_id})")
+            else:
+                log(f"  📓 Journal: close_trade failed")
+    except Exception as e:
+        log(f"  📓 Journal: Error logging exit - {e}")
+
+
+def monitor_for_entry():
+    """Monitor spot price for retracement entry."""
+    global entry_done
+
+    log(f"Monitoring for entry (until {ENTRY_END})...")
+    tick = 0
+
+    while not entry_done:
+        # Check entry window timeout
+        if is_past_time(ENTRY_END_H, ENTRY_END_M):
+            log(f"⏰ Entry window closed ({ENTRY_END}). No retracement occurred.")
+            return
+
+        spot = get_spot_ltp()
+        if spot is None:
+            time.sleep(2)
+            continue
+
+        tick += 1
+        if tick % 15 == 0:
+            target = first_candle_high if bias == "BULLISH" else first_candle_low
+            log(f"  LTP={spot} | Target={'HIGH' if bias=='BULLISH' else 'LOW'}={target}")
+
+        if bias == "BULLISH" and spot >= first_candle_high:
+            log(f"  ✅ Spot ({spot}) touched HIGH ({first_candle_high})!")
+            place_entry("CE")
+            return
+
+        elif bias == "BEARISH" and spot <= first_candle_low:
+            log(f"  ✅ Spot ({spot}) touched LOW ({first_candle_low})!")
+            place_entry("PE")
+            return
+
+        time.sleep(2)
+
+
+def monitor_stop_loss():
+    """Monitor for SL or exit time."""
+    if not entry_done:
+        return
+
+    log(f"Monitoring SL & exit time (exit at {EXIT_TIME})...")
+
+    while True:
+        # Check exit time
+        if is_past_time(EXIT_H, EXIT_M):
+            place_exit(f"Exit time {EXIT_TIME}")
+            return
+
+        spot = get_spot_ltp()
+        if spot is None:
+            time.sleep(2)
+            continue
+
+        if bias == "BULLISH" and spot < first_candle_low:
+            place_exit(f"SL HIT - Spot {spot} < Low {first_candle_low}")
+            return
+
+        elif bias == "BEARISH" and spot > first_candle_high:
+            place_exit(f"SL HIT - Spot {spot} > High {first_candle_high}")
+            return
+
+        time.sleep(2)
+
+
+def main():
+    """Main strategy execution."""
+    log(f"")
+    log(f"{'='*60}")
+    log(f"  FIRST 1-MIN CANDLE STRATEGY")
+    log(f"  Symbol: {SYMBOL} | Strike: {STRIKE_SELECTION} | Lots: {LOTS}")
+    log(f"  Entry: {ENTRY_START}-{ENTRY_END} | Exit: {EXIT_TIME}")
+    log(f"  Product: {PRODUCT} | Exchange: {EXCHANGE}")
+    log(f"{'='*60}")
+    log(f"")
+
+    # Step 1: Wait for market open
+    wait_for_time(9, 15, "market open")
+
+    # Step 2: Capture 1st candle
+    if not get_first_candle():
+        return
+
+    # Step 3: Monitor for entry
+    monitor_for_entry()
+
+    # Step 4: Monitor SL / exit
+    monitor_stop_loss()
+
+    log(f"\n✅ Strategy complete for today.")
+
+
+if __name__ == "__main__":
+    main()

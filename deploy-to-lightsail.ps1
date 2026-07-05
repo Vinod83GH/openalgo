@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 $INSTANCE_IP = "3.7.93.99"
 $SSH_KEY = "ubuntu-keypair-prod.pem"
 $GITHUB_REPO = "git@github.com:Vinod83GH/openalgo.git"
-$BRANCH = "dev-jun26"
+$BRANCH = "july2026-changes"
 $APP_DIR = "/home/ubuntu/openalgo"
 
 Write-Host "=== OpenAlgo Lightsail Deployment (Build-on-Instance) ===" -ForegroundColor Cyan
