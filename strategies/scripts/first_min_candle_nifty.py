@@ -230,18 +230,25 @@ def get_first_candle():
                 end_date=end_date,
             )
 
+            # Handle API error responses (returns dict instead of DataFrame)
+            if isinstance(df, dict):
+                error_msg = df.get("message", df.get("error", "Unknown API error"))
+                log(f"  API error: {error_msg}, retry {attempt + 1}/5...")
+                time.sleep(3)
+                continue
+
             if df is None or df.empty:
                 log(f"  Empty data, retry {attempt + 1}/5...")
                 time.sleep(3)
                 continue
 
             # Get today's data
-            if hasattr(df.index, 'date'):
+            if hasattr(df, 'index') and hasattr(df.index, 'date'):
                 today_data = df[df.index.date == datetime.now().date()]
             else:
                 today_data = df
 
-            if today_data.empty:
+            if today_data is None or (hasattr(today_data, 'empty') and today_data.empty):
                 log(f"  No today's data, retry {attempt + 1}/5...")
                 time.sleep(3)
                 continue
