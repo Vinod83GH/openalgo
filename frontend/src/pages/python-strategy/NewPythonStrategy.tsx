@@ -9,7 +9,15 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import StrategyParametersSection from '@/components/python-strategy/StrategyParametersSection'
 import { SCHEDULE_DAYS } from '@/types/python-strategy'
+import type { StrategyEnvVars } from '@/utils/strategy-env-validation'
+import {
+  envVarsToFormState,
+  formStateToEnvVars,
+  validateLots,
+  validateTimeFormat,
+} from '@/utils/strategy-env-validation'
 
 const EXAMPLE_STRATEGY = `"""
 Example OpenAlgo Strategy
@@ -63,6 +71,9 @@ export default function NewPythonStrategy() {
   const [stopTime, setStopTime] = useState('16:00')
   const [selectedDays, setSelectedDays] = useState<string[]>(['mon', 'tue', 'wed', 'thu', 'fri'])
 
+  // Strategy parameters (env vars) form state
+  const [envState, setEnvState] = useState<StrategyEnvVars>(envVarsToFormState({}))
+
   const handleDayToggle = (day: string) => {
     setSelectedDays((prev) =>
       prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]
@@ -95,6 +106,27 @@ export default function NewPythonStrategy() {
     }
     if (selectedDays.length === 0) {
       newErrors.days = 'Select at least one day'
+    }
+
+    // Strategy parameters validation
+    const lotsError = validateLots(envState.STRATEGY_LOTS)
+    if (lotsError) {
+      newErrors.STRATEGY_LOTS = lotsError
+    }
+
+    const entryStartError = validateTimeFormat(envState.STRATEGY_ENTRY_START)
+    if (entryStartError) {
+      newErrors.STRATEGY_ENTRY_START = entryStartError
+    }
+
+    const entryEndError = validateTimeFormat(envState.STRATEGY_ENTRY_END)
+    if (entryEndError) {
+      newErrors.STRATEGY_ENTRY_END = entryEndError
+    }
+
+    const exitTimeError = validateTimeFormat(envState.STRATEGY_EXIT_TIME)
+    if (exitTimeError) {
+      newErrors.STRATEGY_EXIT_TIME = exitTimeError
     }
 
     setErrors(newErrors)
@@ -134,12 +166,20 @@ export default function NewPythonStrategy() {
 
     try {
       setLoading(true)
-      // Upload strategy with schedule (schedule is mandatory)
-      const response = await pythonStrategyApi.uploadStrategy(name, file!, {
-        start_time: startTime,
-        stop_time: stopTime,
-        days: selectedDays,
-      })
+      // Convert env state to env_vars dict (filters empty values)
+      const envVars = formStateToEnvVars(envState)
+
+      // Upload strategy with schedule and env vars
+      const response = await pythonStrategyApi.uploadStrategy(
+        name,
+        file!,
+        {
+          start_time: startTime,
+          stop_time: stopTime,
+          days: selectedDays,
+        },
+        envVars
+      )
 
       if (response.status === 'success') {
         showToast.success('Strategy uploaded with schedule', 'pythonStrategy')
@@ -319,6 +359,13 @@ export default function NewPythonStrategy() {
                 </p>
               </div>
             </div>
+
+            {/* Strategy Parameters Section */}
+            <StrategyParametersSection
+              values={envState}
+              onChange={setEnvState}
+              errors={errors}
+            />
 
             {/* Submit */}
             <div className="flex gap-3 pt-4">

@@ -91,6 +91,9 @@ const FlowKeyboardShortcuts = lazy(() => import('@/pages/flow/FlowKeyboardShortc
 // Leverage page
 const Leverage = lazy(() => import('@/pages/Leverage'))
 
+// Paper Journal
+const PaperJournal = lazy(() => import('@/pages/PaperJournal'))
+
 // Admin pages
 const AdminIndex = lazy(() => import('@/pages/admin/AdminIndex'))
 const FreezeQty = lazy(() => import('@/pages/admin/FreezeQty'))
@@ -198,6 +201,8 @@ function App() {
                 <Route path="/flow/shortcuts" element={<FlowKeyboardShortcuts />} />
                 {/* Leverage Configuration */}
                 <Route path="/leverage" element={<Leverage />} />
+                {/* Paper Journal */}
+                <Route path="/paper-journal" element={<PaperJournal />} />
                 {/* Phase 7: Admin */}
                 <Route path="/admin" element={<AdminIndex />} />
                 <Route path="/admin/freeze" element={<FreezeQty />} />
