@@ -471,15 +471,24 @@ def start_strategy_process(strategy_id):
             # Auto-inject OPENALGO_APIKEY for the strategy's owner if not already set
             if "OPENALGO_APIKEY" not in merged_env:
                 try:
-                    from database.auth_db import get_api_key_for_tradingview
+                    from database.auth_db import get_api_key_for_tradingview, get_first_available_api_key
                     owner_user_id = config.get("user_id")
+                    owner_api_key = None
                     if owner_user_id:
                         owner_api_key = get_api_key_for_tradingview(owner_user_id)
-                        if owner_api_key:
-                            merged_env["OPENALGO_APIKEY"] = owner_api_key
-                            logger.info(f"Auto-injected OPENALGO_APIKEY for strategy {strategy_id}")
+                        if not owner_api_key:
+                            logger.warning(f"get_api_key_for_tradingview returned None for user_id={owner_user_id}, trying fallback")
+                    if not owner_api_key:
+                        owner_api_key = get_first_available_api_key()
+                        if not owner_api_key:
+                            logger.error(f"No API key found for strategy {strategy_id} (user_id={owner_user_id})")
+                    if owner_api_key:
+                        merged_env["OPENALGO_APIKEY"] = owner_api_key
+                        logger.info(f"Auto-injected OPENALGO_APIKEY for strategy {strategy_id}")
+                    else:
+                        logger.error(f"OPENALGO_APIKEY could not be injected for strategy {strategy_id} - strategy will fail")
                 except Exception as e:
-                    logger.warning(f"Could not auto-inject OPENALGO_APIKEY: {e}")
+                    logger.error(f"Exception while injecting OPENALGO_APIKEY for {strategy_id}: {e}", exc_info=True)
 
             # Auto-inject OPENALGO_HOST if not already set
             if "OPENALGO_HOST" not in merged_env:
