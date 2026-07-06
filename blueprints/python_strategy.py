@@ -467,6 +467,24 @@ def start_strategy_process(strategy_id):
                 )
                 strategy_env_vars = {}
             merged_env = build_subprocess_env(strategy_env_vars)
+
+            # Auto-inject OPENALGO_APIKEY for the strategy's owner if not already set
+            if "OPENALGO_APIKEY" not in merged_env:
+                try:
+                    from database.auth_db import get_api_key_for_tradingview
+                    owner_user_id = config.get("user_id")
+                    if owner_user_id:
+                        owner_api_key = get_api_key_for_tradingview(owner_user_id)
+                        if owner_api_key:
+                            merged_env["OPENALGO_APIKEY"] = owner_api_key
+                            logger.info(f"Auto-injected OPENALGO_APIKEY for strategy {strategy_id}")
+                except Exception as e:
+                    logger.warning(f"Could not auto-inject OPENALGO_APIKEY: {e}")
+
+            # Auto-inject OPENALGO_HOST if not already set
+            if "OPENALGO_HOST" not in merged_env:
+                merged_env["OPENALGO_HOST"] = "http://127.0.0.1:5000"
+
             subprocess_args["env"] = merged_env
             if strategy_env_vars:
                 logger.info(f"Injecting env vars for {strategy_id}: {list(strategy_env_vars.keys())}")
