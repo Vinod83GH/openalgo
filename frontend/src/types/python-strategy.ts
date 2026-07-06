@@ -15,6 +15,7 @@ export interface PythonStrategy {
   schedule_start_time: string | null
   schedule_stop_time: string | null
   schedule_days: string[]
+  env_vars?: Record<string, string>
   created_at: string
   updated_at: string
 }
@@ -52,6 +53,7 @@ export interface ScheduleConfig {
   start_time: string
   stop_time: string
   days: string[]
+  env_vars?: Record<string, string>
 }
 
 export interface MasterContractStatus {
