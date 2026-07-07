@@ -497,14 +497,14 @@ def get_latest_candles():
 
 
 def monitor_for_entry():
-    """Monitor 1-min candles for entry trigger — no bias, first breakout wins."""
-    global entry_done, bias
+    """Step 1: Monitor 1-min candles for breakout — no order placed here."""
+    global bias
 
-    log(f"Monitoring for breakout entry via 1-min candle close (until {ENTRY_END})...")
-    log(f"  CALL trigger: candle close > {candle_high} (Guru candle HIGH)")
-    log(f"  PUT trigger:  candle close < {candle_low} (Guru candle LOW)")
+    log(f"STEP 1: Monitoring for breakout via 1-min candle close (until {ENTRY_END})...")
+    log(f"  BULLISH breakout: candle close > {candle_high} (Guru candle HIGH)")
+    log(f"  BEARISH breakout: candle close < {candle_low} (Guru candle LOW)")
 
-    while not entry_done:
+    while True:
         # Check entry window timeout
         if is_past_time(ENTRY_END_H, ENTRY_END_M):
             log(f"⏰ Entry window closed ({ENTRY_END}). No breakout occurred.")
@@ -522,28 +522,84 @@ def monitor_for_entry():
             log(f"  No candle data available, retrying...")
             continue
 
-        # Get the last closed candle
+        latest = candles.iloc[-1]
+        latest_close = round(float(latest["close"]), 2)
+
+        candle_time = candles.index[-1] if hasattr(candles.index[-1], 'strftime') else "?"
+        log(f"  Candle [{candle_time}] C={latest_close}")
+
+        # Check BULLISH breakout
+        if latest_close > candle_high:
+            bias = "BULLISH"
+            log(f"  ✅ STEP 1 CONFIRMED: BULLISH BREAKOUT! Close ({latest_close}) > HIGH ({candle_high})")
+            log(f"  Now waiting for retracement + re-test...")
+            monitor_for_retest()
+            return
+
+        # Check BEARISH breakout
+        elif latest_close < candle_low:
+            bias = "BEARISH"
+            log(f"  ✅ STEP 1 CONFIRMED: BEARISH BREAKOUT! Close ({latest_close}) < LOW ({candle_low})")
+            log(f"  Now waiting for retracement + re-test...")
+            monitor_for_retest()
+            return
+
+
+def monitor_for_retest():
+    """Step 2: After breakout, wait for retracement then re-test that closes beyond level."""
+    global entry_done
+
+    if bias == "BULLISH":
+        log(f"STEP 2: Waiting for retracement then candle close > {candle_high} to confirm CALL")
+    else:
+        log(f"STEP 2: Waiting for retracement then candle close < {candle_low} to confirm PUT")
+
+    retraced = False
+
+    while not entry_done:
+        # Check entry window timeout
+        if is_past_time(ENTRY_END_H, ENTRY_END_M):
+            log(f"⏰ Entry window closed ({ENTRY_END}). Retracement not confirmed.")
+            return
+
+        # Wait for next candle
+        now = datetime.now()
+        seconds_to_next_min = 60 - now.second + 5
+        time.sleep(seconds_to_next_min)
+
+        # Fetch latest candles
+        candles = get_latest_candles()
+        if candles is None or (hasattr(candles, 'empty') and candles.empty):
+            continue
+
         latest = candles.iloc[-1]
         latest_high = round(float(latest["high"]), 2)
         latest_low = round(float(latest["low"]), 2)
         latest_close = round(float(latest["close"]), 2)
 
         candle_time = candles.index[-1] if hasattr(candles.index[-1], 'strftime') else "?"
-        log(f"  Candle [{candle_time}] H={latest_high} L={latest_low} C={latest_close}")
 
-        # Check BULLISH breakout: close > Guru candle HIGH
-        if latest_close > candle_high:
-            bias = "BULLISH"
-            log(f"  ✅ BULLISH BREAKOUT! Close ({latest_close}) > Guru HIGH ({candle_high})")
-            place_entry("CE")
-            return
+        if bias == "BULLISH":
+            if not retraced and latest_close <= candle_high:
+                retraced = True
+                log(f"  📉 Retracement detected [{candle_time}] C={latest_close} ≤ HIGH={candle_high}")
+            elif retraced and latest_high >= candle_high and latest_close > candle_high:
+                log(f"  ✅ STEP 2 CONFIRMED [{candle_time}]: Re-test! H={latest_high} touched HIGH, C={latest_close} > HIGH={candle_high}")
+                place_entry("CE")
+                return
+            else:
+                log(f"  Candle [{candle_time}] C={latest_close} | Retraced={retraced} | Waiting for re-test above {candle_high}")
 
-        # Check BEARISH breakout: close < Guru candle LOW
-        elif latest_close < candle_low:
-            bias = "BEARISH"
-            log(f"  ✅ BEARISH BREAKOUT! Close ({latest_close}) < Guru LOW ({candle_low})")
-            place_entry("PE")
-            return
+        elif bias == "BEARISH":
+            if not retraced and latest_close >= candle_low:
+                retraced = True
+                log(f"  📈 Retracement detected [{candle_time}] C={latest_close} ≥ LOW={candle_low}")
+            elif retraced and latest_low <= candle_low and latest_close < candle_low:
+                log(f"  ✅ STEP 2 CONFIRMED [{candle_time}]: Re-test! L={latest_low} touched LOW, C={latest_close} < LOW={candle_low}")
+                place_entry("PE")
+                return
+            else:
+                log(f"  Candle [{candle_time}] C={latest_close} | Retraced={retraced} | Waiting for re-test below {candle_low}")
 
 
 def monitor_stop_loss():

@@ -440,14 +440,14 @@ def get_latest_candles():
 
 
 def monitor_for_entry():
-    """Monitor 1-min candles for entry trigger — no bias, first breakout wins."""
-    global entry_done, bias
+    """Step 1: Monitor 1-min candles for breakout — no order placed here."""
+    global bias
 
-    log(f"Monitoring for breakout entry via 1-min candle close (until {ENTRY_END})...")
-    log(f"  CALL trigger: candle close > {first_candle_high} (1st candle HIGH)")
-    log(f"  PUT trigger:  candle close < {first_candle_low} (1st candle LOW)")
+    log(f"STEP 1: Monitoring for breakout via 1-min candle close (until {ENTRY_END})...")
+    log(f"  BULLISH breakout: candle close > {first_candle_high} (1st candle HIGH)")
+    log(f"  BEARISH breakout: candle close < {first_candle_low} (1st candle LOW)")
 
-    while not entry_done:
+    while True:
         # Check entry window timeout
         if is_past_time(ENTRY_END_H, ENTRY_END_M):
             log(f"⏰ Entry window closed ({ENTRY_END}). No breakout occurred.")
@@ -467,26 +467,89 @@ def monitor_for_entry():
 
         # Get the last closed candle (most recent row)
         latest = candles.iloc[-1]
-        latest_high = round(float(latest["high"]), 2)
-        latest_low = round(float(latest["low"]), 2)
         latest_close = round(float(latest["close"]), 2)
 
         candle_time = candles.index[-1] if hasattr(candles.index[-1], 'strftime') else "?"
-        log(f"  Candle [{candle_time}] H={latest_high} L={latest_low} C={latest_close}")
+        log(f"  Candle [{candle_time}] C={latest_close}")
 
         # Check BULLISH breakout: close > 1st candle HIGH
         if latest_close > first_candle_high:
             bias = "BULLISH"
-            log(f"  ✅ BULLISH BREAKOUT! Close ({latest_close}) > 1st candle HIGH ({first_candle_high})")
-            place_entry("CE")
+            log(f"  ✅ STEP 1 CONFIRMED: BULLISH BREAKOUT! Close ({latest_close}) > HIGH ({first_candle_high})")
+            log(f"  Now waiting for retracement + re-test...")
+            monitor_for_retest()
             return
 
         # Check BEARISH breakout: close < 1st candle LOW
         elif latest_close < first_candle_low:
             bias = "BEARISH"
-            log(f"  ✅ BEARISH BREAKOUT! Close ({latest_close}) < 1st candle LOW ({first_candle_low})")
-            place_entry("PE")
+            log(f"  ✅ STEP 1 CONFIRMED: BEARISH BREAKOUT! Close ({latest_close}) < LOW ({first_candle_low})")
+            log(f"  Now waiting for retracement + re-test...")
+            monitor_for_retest()
             return
+
+
+def monitor_for_retest():
+    """Step 2: After breakout, wait for retracement then re-test that closes beyond level."""
+    global entry_done
+
+    if bias == "BULLISH":
+        log(f"STEP 2: Waiting for retracement then candle close > {first_candle_high} to confirm CALL")
+    else:
+        log(f"STEP 2: Waiting for retracement then candle close < {first_candle_low} to confirm PUT")
+
+    retraced = False  # Track if price has pulled back
+
+    while not entry_done:
+        # Check entry window timeout
+        if is_past_time(ENTRY_END_H, ENTRY_END_M):
+            log(f"⏰ Entry window closed ({ENTRY_END}). Retracement not confirmed.")
+            return
+
+        # Wait for next candle
+        now = datetime.now()
+        seconds_to_next_min = 60 - now.second + 5
+        time.sleep(seconds_to_next_min)
+
+        # Fetch latest candles
+        candles = get_latest_candles()
+        if candles is None or (hasattr(candles, 'empty') and candles.empty):
+            continue
+
+        latest = candles.iloc[-1]
+        latest_high = round(float(latest["high"]), 2)
+        latest_low = round(float(latest["low"]), 2)
+        latest_close = round(float(latest["close"]), 2)
+
+        candle_time = candles.index[-1] if hasattr(candles.index[-1], 'strftime') else "?"
+
+        if bias == "BULLISH":
+            # Check if price has retraced (candle close ≤ HIGH)
+            if not retraced and latest_low <= first_candle_high:
+                retraced = True
+                log(f"  📉 Retracement detected [{candle_time}] C={latest_close} ≤ HIGH={first_candle_high}")
+
+            # After retracement, check for re-test: candle touches HIGH AND closes above it
+            elif retraced and latest_high >= first_candle_high and latest_close > first_candle_high:
+                log(f"  ✅ STEP 2 CONFIRMED [{candle_time}]: Re-test! H={latest_high} touched HIGH, C={latest_close} > HIGH={first_candle_high}")
+                place_entry("CE")
+                return
+            else:
+                log(f"  Candle [{candle_time}] C={latest_close} | Retraced={retraced} | Waiting for re-test above {first_candle_high}")
+
+        elif bias == "BEARISH":
+            # Check if price has retraced (candle close ≥ LOW)
+            if not retraced and latest_close >= first_candle_low:
+                retraced = True
+                log(f"  📈 Retracement detected [{candle_time}] C={latest_close} ≥ LOW={first_candle_low}")
+
+            # After retracement, check for re-test: candle touches LOW AND closes below it
+            elif retraced and latest_low <= first_candle_low and latest_close < first_candle_low:
+                log(f"  ✅ STEP 2 CONFIRMED [{candle_time}]: Re-test! L={latest_low} touched LOW, C={latest_close} < LOW={first_candle_low}")
+                place_entry("PE")
+                return
+            else:
+                log(f"  Candle [{candle_time}] C={latest_close} | Retraced={retraced} | Waiting for re-test below {first_candle_low}")
 
 
 def monitor_stop_loss():
