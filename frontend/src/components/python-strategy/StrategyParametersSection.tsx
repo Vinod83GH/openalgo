@@ -27,7 +27,7 @@ const STRIKE_OPTIONS = [
 
 const PRODUCT_OPTIONS = ['MIS', 'NRML']
 
-const EXCHANGE_OPTIONS = ['NFO', 'BFO', 'MCX', 'CDS']
+const EXCHANGE_OPTIONS = ['NSE', 'NSE_INDEX', 'NFO', 'BFO', 'BSE', 'MCX', 'CDS']
 
 interface StrategyParametersSectionProps {
   values: StrategyEnvVars

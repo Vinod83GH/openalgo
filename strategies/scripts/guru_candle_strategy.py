@@ -1,25 +1,25 @@
 #!/usr/bin/env python
 """
-First 1-Minute Candle Strategy - Index Options (NIFTY/BANKNIFTY)
-================================================================
+Guru Candle Strategy - Stock Options
+=====================================
 Strategy Logic:
-1. Wait for 1st 1-min candle to close (9:15-9:16)
+1. Wait for 11:39 AM 1-min candle to close (11:39-11:40)
 2. Mark its High and Low
 3. Determine bias:
    - Close ABOVE midpoint (bullish) → wait for retracement to High → BUY CALL
    - Close BELOW midpoint (bearish) → wait for retracement to Low → BUY PUT
-4. Stop-loss: opposite side of 1st candle
+4. Stop-loss: opposite side of the candle
 5. Auto-exit at configured exit time
 
 Configuration (via Environment Variables on Python Strategy page):
-  STRATEGY_SYMBOL     = NIFTY | BANKNIFTY          (default: NIFTY)
-  STRATEGY_STRIKE     = ITM3|ITM2|ITM1|ATM|OTM1|OTM2|OTM3  (default: ITM2)
+  STRATEGY_SYMBOL     = Stock symbol (e.g., RELIANCE, TCS, HDFCBANK)  (REQUIRED)
+  STRATEGY_EXCHANGE   = NSE | BSE                   (REQUIRED - spot exchange)
+  STRATEGY_STRIKE     = ITM3|ITM2|ITM1|ATM|OTM1|OTM2|OTM3  (default: ATM)
   STRATEGY_LOTS       = Number of lots              (default: 1)
-  STRATEGY_ENTRY_START = HH:MM entry window start  (default: 09:16)
-  STRATEGY_ENTRY_END  = HH:MM entry window end     (default: 10:30)
+  STRATEGY_ENTRY_START = HH:MM entry window start  (default: 11:40)
+  STRATEGY_ENTRY_END  = HH:MM entry window end     (default: 14:30)
   STRATEGY_EXIT_TIME  = HH:MM force exit time      (default: 15:15)
   STRATEGY_PRODUCT    = MIS | NRML                  (default: MIS)
-  STRATEGY_EXCHANGE   = NFO | BFO                   (default: NFO)
 """
 
 import os
@@ -28,7 +28,6 @@ import requests
 from datetime import datetime, timedelta
 
 from openalgo import api
-
 
 # ============================================================
 # PAPER JOURNAL CLIENT
@@ -40,10 +39,10 @@ class PaperJournalClient:
     def __init__(self, api_key: str, host: str):
         self.api_key = api_key
         self.host = host.rstrip("/")
-        self._active = None  # Cached mode status
+        self._active = None
 
     def is_active(self) -> bool:
-        """Check if app is in Analyzer mode by querying the journal status endpoint."""
+        """Check if app is in Analyzer mode."""
         try:
             resp = requests.get(
                 f"{self.host}/api/v1/paperjournal/status",
@@ -61,7 +60,7 @@ class PaperJournalClient:
         return self._active
 
     def open_trade(self, **kwargs) -> int | None:
-        """Open a new trade record. Returns trade_id or None on failure."""
+        """Open a new trade record. Returns trade_id or None."""
         try:
             payload = {"apikey": self.api_key, **kwargs}
             resp = requests.post(
@@ -89,6 +88,7 @@ class PaperJournalClient:
         except Exception:
             return False
 
+
 # ============================================================
 # CONFIGURATION — Read from environment variables
 # ============================================================
@@ -100,28 +100,72 @@ if not API_KEY:
 
 HOST = os.getenv("OPENALGO_HOST", "http://127.0.0.1:5000")
 
-# Strategy parameters (configurable from Python Strategy page env vars)
-SYMBOL = os.getenv("STRATEGY_SYMBOL", "NIFTY")
-STRIKE_SELECTION = os.getenv("STRATEGY_STRIKE", "ITM2")
+# Strategy parameters (from Python Strategy page env vars)
+SYMBOL = os.getenv("STRATEGY_SYMBOL", "")
+if not SYMBOL:
+    print("Error: STRATEGY_SYMBOL environment variable not set. Configure it on the Strategy page.")
+    exit(1)
+
+EXCHANGE = os.getenv("STRATEGY_EXCHANGE", "")
+if not EXCHANGE:
+    print("Error: STRATEGY_EXCHANGE environment variable not set. Configure it on the Strategy page.")
+    exit(1)
+
+STRIKE_SELECTION = os.getenv("STRATEGY_STRIKE", "ATM")
 LOTS = int(os.getenv("STRATEGY_LOTS", "1"))
-ENTRY_START = os.getenv("STRATEGY_ENTRY_START", "09:16")
-ENTRY_END = os.getenv("STRATEGY_ENTRY_END", "10:30")
+ENTRY_START = os.getenv("STRATEGY_ENTRY_START", "11:40")
+ENTRY_END = os.getenv("STRATEGY_ENTRY_END", "14:30")
 EXIT_TIME = os.getenv("STRATEGY_EXIT_TIME", "15:15")
 PRODUCT = os.getenv("STRATEGY_PRODUCT", "MIS")
-EXCHANGE = os.getenv("STRATEGY_EXCHANGE", "NFO")
+
+# The candle to monitor (11:39 AM)
+CANDLE_TIME = "11:39"
 
 # Derived
-STRATEGY_NAME = f"FirstMinCandle-{SYMBOL}"
-SPOT_EXCHANGE = os.getenv("STRATEGY_EXCHANGE", "NSE_INDEX")  # Spot exchange from page env (default NSE_INDEX for indices)
+STRATEGY_NAME = f"GuruCandle-{SYMBOL}"
+# For stock options, the options exchange is NFO
+OPTIONS_EXCHANGE = "NFO"
 
-# Lot sizes (will be fetched from API, these are fallbacks)
-LOT_SIZES = {"NIFTY": 65, "BANKNIFTY": 30}
+# Fallback lot sizes for common stock options (will use API resolution first)
+STOCK_LOT_SIZES = {
+    "RELIANCE": 250,
+    "TCS": 175,
+    "HDFCBANK": 550,
+    "INFY": 300,
+    "ICICIBANK": 700,
+    "SBIN": 750,
+    "BHARTIARTL": 475,
+    "ITC": 1600,
+    "KOTAKBANK": 400,
+    "LT": 375,
+    "AXISBANK": 625,
+    "HINDUNILVR": 300,
+    "BAJFINANCE": 125,
+    "MARUTI": 100,
+    "TATAMOTORS": 575,
+    "SUNPHARMA": 350,
+    "TITAN": 225,
+    "TATASTEEL": 1100,
+    "WIPRO": 1500,
+    "ADANIENT": 250,
+    "POWERGRID": 2700,
+    "NTPC": 2700,
+    "ONGC": 3850,
+    "COALINDIA": 2100,
+    "JSWSTEEL": 675,
+    "M&M": 350,
+    "HINDALCO": 1075,
+    "ULTRACEMCO": 100,
+    "DRREDDY": 125,
+    "TECHM": 600,
+}
 
 # Parse time configs
 def parse_time(time_str):
     parts = time_str.split(":")
     return int(parts[0]), int(parts[1])
 
+CANDLE_H, CANDLE_M = parse_time(CANDLE_TIME)
 ENTRY_START_H, ENTRY_START_M = parse_time(ENTRY_START)
 ENTRY_END_H, ENTRY_END_M = parse_time(ENTRY_END)
 EXIT_H, EXIT_M = parse_time(EXIT_TIME)
@@ -136,10 +180,10 @@ journal = PaperJournalClient(api_key=API_KEY, host=HOST)
 # STATE
 # ============================================================
 
-first_candle_high = None
-first_candle_low = None
-first_candle_close = None
-first_candle_mid = None
+candle_high = None
+candle_low = None
+candle_close = None
+candle_mid = None
 bias = None
 entry_done = False
 option_symbol = None
@@ -162,7 +206,7 @@ def resolve_option_symbol(option_type, spot_ltp):
     payload = {
         "apikey": API_KEY,
         "underlying": SYMBOL,
-        "exchange": SPOT_EXCHANGE,
+        "exchange": EXCHANGE,
         "offset": STRIKE_SELECTION,
         "option_type": option_type,
     }
@@ -175,8 +219,8 @@ def resolve_option_symbol(option_type, spot_ltp):
 
         if data.get("status") == "success":
             sym = data.get("symbol")
-            exch = data.get("exchange", EXCHANGE)
-            lotsize = data.get("lotsize", LOT_SIZES.get(SYMBOL, 75))
+            exch = data.get("exchange", OPTIONS_EXCHANGE)
+            lotsize = data.get("lotsize", STOCK_LOT_SIZES.get(SYMBOL, 100))
             log(f"  ✅ Resolved: {sym} on {exch} (lot={lotsize})")
             return sym, exch, int(lotsize)
         else:
@@ -206,12 +250,13 @@ def is_past_time(hour, minute):
     return now.hour > hour or (now.hour == hour and now.minute >= minute)
 
 
-def get_first_candle():
-    """Capture the 1st 1-minute candle after it closes."""
-    global first_candle_high, first_candle_low, first_candle_close, first_candle_mid, bias
+def get_guru_candle():
+    """Capture the 11:39 AM 1-minute candle after it closes."""
+    global candle_high, candle_low, candle_close, candle_mid, bias
 
-    log("Waiting for 1st minute candle to close...")
-    wait_for_time(ENTRY_START_H, ENTRY_START_M, "1st candle close")
+    log(f"Waiting for Guru Candle ({CANDLE_TIME}) to close...")
+    # Wait until 11:40 (candle close time = candle_time + 1 min)
+    wait_for_time(CANDLE_H, CANDLE_M + 1, "Guru candle close")
 
     # Extra 5 seconds to ensure candle is fully formed
     time.sleep(5)
@@ -224,7 +269,7 @@ def get_first_candle():
         try:
             df = client.history(
                 symbol=SYMBOL,
-                exchange=SPOT_EXCHANGE,
+                exchange=EXCHANGE,
                 interval="1m",
                 start_date=start_date,
                 end_date=end_date,
@@ -253,28 +298,41 @@ def get_first_candle():
                 time.sleep(3)
                 continue
 
-            # First candle
-            candle = today_data.iloc[0]
-            first_candle_high = round(float(candle["high"]), 2)
-            first_candle_low = round(float(candle["low"]), 2)
-            first_candle_close = round(float(candle["close"]), 2)
-            first_candle_mid = round((first_candle_high + first_candle_low) / 2, 2)
+            # Find the 11:39 candle
+            target_candle = None
+            for idx, row in today_data.iterrows():
+                candle_time = idx
+                if hasattr(candle_time, 'hour'):
+                    if candle_time.hour == CANDLE_H and candle_time.minute == CANDLE_M:
+                        target_candle = row
+                        break
+
+            if target_candle is None:
+                log(f"  Candle at {CANDLE_TIME} not found, retry {attempt + 1}/5...")
+                time.sleep(3)
+                continue
+
+            candle_high = round(float(target_candle["high"]), 2)
+            candle_low = round(float(target_candle["low"]), 2)
+            candle_close = round(float(target_candle["close"]), 2)
+            candle_mid = round((candle_high + candle_low) / 2, 2)
 
             # Determine bias
-            bias = "BULLISH" if first_candle_close > first_candle_mid else "BEARISH"
+            bias = "BULLISH" if candle_close > candle_mid else "BEARISH"
 
             log(f"")
             log(f"{'='*50}")
-            log(f"  1st CANDLE: H={first_candle_high} L={first_candle_low} C={first_candle_close}")
-            log(f"  Midpoint: {first_candle_mid} | Bias: {bias}")
+            log(f"  GURU CANDLE ({CANDLE_TIME}): H={candle_high} L={candle_low} C={candle_close}")
+            log(f"  Midpoint: {candle_mid} | Bias: {bias}")
+            log(f"  Symbol: {SYMBOL} | Exchange: {EXCHANGE}")
             log(f"{'='*50}")
 
             if bias == "BULLISH":
-                log(f"  Plan: Wait for retracement to HIGH ({first_candle_high}) → BUY CALL {STRIKE_SELECTION}")
-                log(f"  SL: Spot drops below LOW ({first_candle_low})")
+                log(f"  Plan: Wait for retracement to HIGH ({candle_high}) → BUY CALL {STRIKE_SELECTION}")
+                log(f"  SL: Spot drops below LOW ({candle_low})")
             else:
-                log(f"  Plan: Wait for retracement to LOW ({first_candle_low}) → BUY PUT {STRIKE_SELECTION}")
-                log(f"  SL: Spot rises above HIGH ({first_candle_high})")
+                log(f"  Plan: Wait for retracement to LOW ({candle_low}) → BUY PUT {STRIKE_SELECTION}")
+                log(f"  SL: Spot rises above HIGH ({candle_high})")
             log(f"")
             return True
 
@@ -282,14 +340,14 @@ def get_first_candle():
             log(f"  Error: {e}, retry {attempt + 1}/5...")
             time.sleep(3)
 
-    log("Failed to capture 1st candle. Aborting.")
+    log("Failed to capture Guru Candle. Aborting.")
     return False
 
 
 def get_spot_ltp():
     """Get current spot LTP."""
     try:
-        quotes = client.quotes(symbol=SYMBOL, exchange=SPOT_EXCHANGE)
+        quotes = client.quotes(symbol=SYMBOL, exchange=EXCHANGE)
         if quotes and "ltp" in quotes:
             return float(quotes["ltp"])
     except Exception as e:
@@ -346,18 +404,19 @@ def place_entry(option_type):
                     entry_quantity=actual_quantity,
                     entry_action="BUY",
                     custom_metadata={
-                        "first_candle_high": first_candle_high,
-                        "first_candle_low": first_candle_low,
-                        "first_candle_close": first_candle_close,
-                        "first_candle_mid": first_candle_mid,
+                        "candle_time": CANDLE_TIME,
+                        "candle_high": candle_high,
+                        "candle_low": candle_low,
+                        "candle_close": candle_close,
+                        "candle_mid": candle_mid,
                         "bias": bias,
+                        "underlying": SYMBOL,
+                        "exchange": EXCHANGE,
                     },
                 )
                 if trade_id:
                     journal_trade_id = trade_id
                     log(f"  📓 Journal: Trade opened (ID={trade_id})")
-                else:
-                    log(f"  📓 Journal: open_trade returned no ID")
         except Exception as e:
             log(f"  📓 Journal: Error logging entry - {e}")
 
@@ -390,7 +449,7 @@ def place_exit(reason=""):
     except Exception as e:
         log(f"  Exit Error: {e}")
 
-    # Log exit to paper journal if in Analyzer mode
+    # Log exit to paper journal
     try:
         if journal_trade_id and journal.is_active():
             spot_ltp = get_spot_ltp()
@@ -402,8 +461,6 @@ def place_exit(reason=""):
             )
             if success:
                 log(f"  📓 Journal: Trade closed (ID={journal_trade_id})")
-            else:
-                log(f"  📓 Journal: close_trade failed")
     except Exception as e:
         log(f"  📓 Journal: Error logging exit - {e}")
 
@@ -428,16 +485,16 @@ def monitor_for_entry():
 
         tick += 1
         if tick % 15 == 0:
-            target = first_candle_high if bias == "BULLISH" else first_candle_low
+            target = candle_high if bias == "BULLISH" else candle_low
             log(f"  LTP={spot} | Target={'HIGH' if bias=='BULLISH' else 'LOW'}={target}")
 
-        if bias == "BULLISH" and spot >= first_candle_high:
-            log(f"  ✅ Spot ({spot}) touched HIGH ({first_candle_high})!")
+        if bias == "BULLISH" and spot >= candle_high:
+            log(f"  ✅ Spot ({spot}) touched HIGH ({candle_high})!")
             place_entry("CE")
             return
 
-        elif bias == "BEARISH" and spot <= first_candle_low:
-            log(f"  ✅ Spot ({spot}) touched LOW ({first_candle_low})!")
+        elif bias == "BEARISH" and spot <= candle_low:
+            log(f"  ✅ Spot ({spot}) touched LOW ({candle_low})!")
             place_entry("PE")
             return
 
@@ -462,12 +519,12 @@ def monitor_stop_loss():
             time.sleep(2)
             continue
 
-        if bias == "BULLISH" and spot < first_candle_low:
-            place_exit(f"SL HIT - Spot {spot} < Low {first_candle_low}")
+        if bias == "BULLISH" and spot < candle_low:
+            place_exit(f"SL HIT - Spot {spot} < Low {candle_low}")
             return
 
-        elif bias == "BEARISH" and spot > first_candle_high:
-            place_exit(f"SL HIT - Spot {spot} > High {first_candle_high}")
+        elif bias == "BEARISH" and spot > candle_high:
+            place_exit(f"SL HIT - Spot {spot} > High {candle_high}")
             return
 
         time.sleep(2)
@@ -477,18 +534,19 @@ def main():
     """Main strategy execution."""
     log(f"")
     log(f"{'='*60}")
-    log(f"  FIRST 1-MIN CANDLE STRATEGY")
-    log(f"  Symbol: {SYMBOL} | Strike: {STRIKE_SELECTION} | Lots: {LOTS}")
-    log(f"  Entry: {ENTRY_START}-{ENTRY_END} | Exit: {EXIT_TIME}")
-    log(f"  Product: {PRODUCT} | Exchange: {EXCHANGE}")
+    log(f"  GURU CANDLE STRATEGY (Stock Options)")
+    log(f"  Symbol: {SYMBOL} | Exchange: {EXCHANGE}")
+    log(f"  Strike: {STRIKE_SELECTION} | Lots: {LOTS}")
+    log(f"  Candle: {CANDLE_TIME} | Entry: {ENTRY_START}-{ENTRY_END} | Exit: {EXIT_TIME}")
+    log(f"  Product: {PRODUCT} | Options Exch: {OPTIONS_EXCHANGE}")
     log(f"{'='*60}")
     log(f"")
 
-    # Step 1: Wait for market open
+    # Step 1: Wait for market to be open enough
     wait_for_time(9, 15, "market open")
 
-    # Step 2: Capture 1st candle
-    if not get_first_candle():
+    # Step 2: Capture the Guru Candle (11:39 AM)
+    if not get_guru_candle():
         return
 
     # Step 3: Monitor for entry
