@@ -317,22 +317,16 @@ def get_guru_candle():
             candle_close = round(float(target_candle["close"]), 2)
             candle_mid = round((candle_high + candle_low) / 2, 2)
 
-            # Determine bias
-            bias = "BULLISH" if candle_close > candle_mid else "BEARISH"
-
             log(f"")
             log(f"{'='*50}")
             log(f"  GURU CANDLE ({CANDLE_TIME}): H={candle_high} L={candle_low} C={candle_close}")
-            log(f"  Midpoint: {candle_mid} | Bias: {bias}")
+            log(f"  Midpoint: {candle_mid}")
             log(f"  Symbol: {SYMBOL} | Exchange: {EXCHANGE}")
             log(f"{'='*50}")
-
-            if bias == "BULLISH":
-                log(f"  Plan: Wait for retracement to HIGH ({candle_high}) → BUY CALL {STRIKE_SELECTION}")
-                log(f"  SL: Spot drops below LOW ({candle_low})")
-            else:
-                log(f"  Plan: Wait for retracement to LOW ({candle_low}) → BUY PUT {STRIKE_SELECTION}")
-                log(f"  SL: Spot rises above HIGH ({candle_high})")
+            log(f"  Waiting for breakout:")
+            log(f"    CALL entry: any candle close > {candle_high}")
+            log(f"    PUT entry:  any candle close < {candle_low}")
+            log(f"    SL (after entry): close crosses opposite side")
             log(f"")
             return True
 
@@ -465,48 +459,99 @@ def place_exit(reason=""):
         log(f"  📓 Journal: Error logging exit - {e}")
 
 
-def monitor_for_entry():
-    """Monitor spot price for retracement entry."""
-    global entry_done
+def get_latest_candles():
+    """Fetch today's 1-min candles and return them."""
+    end_date = datetime.now().strftime("%Y-%m-%d")
+    start_date = end_date
 
-    log(f"Monitoring for entry (until {ENTRY_END})...")
-    tick = 0
+    try:
+        df = client.history(
+            symbol=SYMBOL,
+            exchange=EXCHANGE,
+            interval="1m",
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+        # Handle API error responses (returns dict instead of DataFrame)
+        if isinstance(df, dict):
+            return None
+
+        if df is None or df.empty:
+            return None
+
+        # Get today's data
+        if hasattr(df, 'index') and hasattr(df.index, 'date'):
+            today_data = df[df.index.date == datetime.now().date()]
+        else:
+            today_data = df
+
+        if today_data is None or (hasattr(today_data, 'empty') and today_data.empty):
+            return None
+
+        return today_data
+
+    except Exception as e:
+        log(f"  Candle fetch error: {e}")
+        return None
+
+
+def monitor_for_entry():
+    """Monitor 1-min candles for entry trigger — no bias, first breakout wins."""
+    global entry_done, bias
+
+    log(f"Monitoring for breakout entry via 1-min candle close (until {ENTRY_END})...")
+    log(f"  CALL trigger: candle close > {candle_high} (Guru candle HIGH)")
+    log(f"  PUT trigger:  candle close < {candle_low} (Guru candle LOW)")
 
     while not entry_done:
         # Check entry window timeout
         if is_past_time(ENTRY_END_H, ENTRY_END_M):
-            log(f"⏰ Entry window closed ({ENTRY_END}). No retracement occurred.")
+            log(f"⏰ Entry window closed ({ENTRY_END}). No breakout occurred.")
             return
 
-        spot = get_spot_ltp()
-        if spot is None:
-            time.sleep(2)
+        # Wait for the current minute to close
+        now = datetime.now()
+        seconds_to_next_min = 60 - now.second + 5
+        log(f"  Waiting {seconds_to_next_min}s for next candle close...")
+        time.sleep(seconds_to_next_min)
+
+        # Fetch latest candles
+        candles = get_latest_candles()
+        if candles is None or (hasattr(candles, 'empty') and candles.empty):
+            log(f"  No candle data available, retrying...")
             continue
 
-        tick += 1
-        if tick % 15 == 0:
-            target = candle_high if bias == "BULLISH" else candle_low
-            log(f"  LTP={spot} | Target={'HIGH' if bias=='BULLISH' else 'LOW'}={target}")
+        # Get the last closed candle
+        latest = candles.iloc[-1]
+        latest_high = round(float(latest["high"]), 2)
+        latest_low = round(float(latest["low"]), 2)
+        latest_close = round(float(latest["close"]), 2)
 
-        if bias == "BULLISH" and spot >= candle_high:
-            log(f"  ✅ Spot ({spot}) touched HIGH ({candle_high})!")
+        candle_time = candles.index[-1] if hasattr(candles.index[-1], 'strftime') else "?"
+        log(f"  Candle [{candle_time}] H={latest_high} L={latest_low} C={latest_close}")
+
+        # Check BULLISH breakout: close > Guru candle HIGH
+        if latest_close > candle_high:
+            bias = "BULLISH"
+            log(f"  ✅ BULLISH BREAKOUT! Close ({latest_close}) > Guru HIGH ({candle_high})")
             place_entry("CE")
             return
 
-        elif bias == "BEARISH" and spot <= candle_low:
-            log(f"  ✅ Spot ({spot}) touched LOW ({candle_low})!")
+        # Check BEARISH breakout: close < Guru candle LOW
+        elif latest_close < candle_low:
+            bias = "BEARISH"
+            log(f"  ✅ BEARISH BREAKOUT! Close ({latest_close}) < Guru LOW ({candle_low})")
             place_entry("PE")
             return
 
-        time.sleep(2)
-
 
 def monitor_stop_loss():
-    """Monitor for SL or exit time."""
+    """Monitor 1-min candles for SL or exit time (candle-based)."""
     if not entry_done:
         return
 
-    log(f"Monitoring SL & exit time (exit at {EXIT_TIME})...")
+    log(f"Monitoring SL & exit time via 1-min candles (exit at {EXIT_TIME})...")
 
     while True:
         # Check exit time
@@ -514,20 +559,37 @@ def monitor_stop_loss():
             place_exit(f"Exit time {EXIT_TIME}")
             return
 
-        spot = get_spot_ltp()
-        if spot is None:
-            time.sleep(2)
+        # Wait for the current minute to close
+        now = datetime.now()
+        seconds_to_next_min = 60 - now.second + 5
+        time.sleep(seconds_to_next_min)
+
+        # Check exit time again after sleep
+        if is_past_time(EXIT_H, EXIT_M):
+            place_exit(f"Exit time {EXIT_TIME}")
+            return
+
+        # Fetch latest candles
+        candles = get_latest_candles()
+        if candles is None or (hasattr(candles, 'empty') and candles.empty):
+            log(f"  No candle data for SL check, retrying...")
             continue
 
-        if bias == "BULLISH" and spot < candle_low:
-            place_exit(f"SL HIT - Spot {spot} < Low {candle_low}")
+        latest = candles.iloc[-1]
+        latest_high = round(float(latest["high"]), 2)
+        latest_low = round(float(latest["low"]), 2)
+        latest_close = round(float(latest["close"]), 2)
+
+        candle_time = candles.index[-1] if hasattr(candles.index[-1], 'strftime') else "?"
+        log(f"  SL Check [{candle_time}] H={latest_high} L={latest_low} C={latest_close}")
+
+        if bias == "BULLISH" and latest_close < candle_low:
+            place_exit(f"SL HIT - Candle Close {latest_close} < Guru Low {candle_low}")
             return
 
-        elif bias == "BEARISH" and spot > candle_high:
-            place_exit(f"SL HIT - Spot {spot} > High {candle_high}")
+        elif bias == "BEARISH" and latest_close > candle_high:
+            place_exit(f"SL HIT - Candle Close {latest_close} > Guru High {candle_high}")
             return
-
-        time.sleep(2)
 
 
 def main():
