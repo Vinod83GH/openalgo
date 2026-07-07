@@ -580,7 +580,7 @@ def monitor_for_retest():
         candle_time = candles.index[-1] if hasattr(candles.index[-1], 'strftime') else "?"
 
         if bias == "BULLISH":
-            if not retraced and latest_close <= candle_high:
+            if not retraced and latest_low <= candle_high:
                 retraced = True
                 log(f"  📉 Retracement detected [{candle_time}] C={latest_close} ≤ HIGH={candle_high}")
             elif retraced and latest_high >= candle_high and latest_close > candle_high:
@@ -591,7 +591,7 @@ def monitor_for_retest():
                 log(f"  Candle [{candle_time}] C={latest_close} | Retraced={retraced} | Waiting for re-test above {candle_high}")
 
         elif bias == "BEARISH":
-            if not retraced and latest_close >= candle_low:
+            if not retraced and latest_high >= candle_low:
                 retraced = True
                 log(f"  📈 Retracement detected [{candle_time}] C={latest_close} ≥ LOW={candle_low}")
             elif retraced and latest_low <= candle_low and latest_close < candle_low:

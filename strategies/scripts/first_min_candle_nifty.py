@@ -539,7 +539,7 @@ def monitor_for_retest():
 
         elif bias == "BEARISH":
             # Check if price has retraced (candle close ≥ LOW)
-            if not retraced and latest_close >= first_candle_low:
+            if not retraced and latest_high >= first_candle_low:
                 retraced = True
                 log(f"  📈 Retracement detected [{candle_time}] C={latest_close} ≥ LOW={first_candle_low}")
 
