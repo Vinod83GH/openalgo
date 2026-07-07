@@ -385,32 +385,31 @@ def place_entry(option_type):
         log(f"  Order Response: {response}")
         entry_done = True
 
-        # Log trade to paper journal if in Analyzer mode
+        # Log trade to paper journal
         try:
-            if journal.is_active():
-                trade_id = journal.open_trade(
-                    strategy_name=STRATEGY_NAME,
-                    direction=bias,
-                    trade_date=datetime.now().strftime("%Y-%m-%d"),
-                    entry_time=datetime.now().isoformat(),
-                    entry_spot_price=spot_ltp,
-                    entry_option_symbol=option_symbol,
-                    entry_quantity=actual_quantity,
-                    entry_action="BUY",
-                    custom_metadata={
-                        "candle_time": CANDLE_TIME,
-                        "candle_high": candle_high,
-                        "candle_low": candle_low,
-                        "candle_close": candle_close,
-                        "candle_mid": candle_mid,
-                        "bias": bias,
-                        "underlying": SYMBOL,
-                        "exchange": EXCHANGE,
-                    },
-                )
-                if trade_id:
-                    journal_trade_id = trade_id
-                    log(f"  📓 Journal: Trade opened (ID={trade_id})")
+            trade_id = journal.open_trade(
+                strategy_name=STRATEGY_NAME,
+                direction=bias,
+                trade_date=datetime.now().strftime("%Y-%m-%d"),
+                entry_time=datetime.now().isoformat(),
+                entry_spot_price=spot_ltp,
+                entry_option_symbol=option_symbol,
+                entry_quantity=actual_quantity,
+                entry_action="BUY",
+                custom_metadata={
+                    "candle_time": CANDLE_TIME,
+                    "candle_high": candle_high,
+                    "candle_low": candle_low,
+                    "candle_close": candle_close,
+                    "candle_mid": candle_mid,
+                    "bias": bias,
+                    "underlying": SYMBOL,
+                    "exchange": EXCHANGE,
+                },
+            )
+            if trade_id:
+                journal_trade_id = trade_id
+                log(f"  📓 Journal: Trade opened (ID={trade_id})")
         except Exception as e:
             log(f"  📓 Journal: Error logging entry - {e}")
 
@@ -445,7 +444,7 @@ def place_exit(reason=""):
 
     # Log exit to paper journal
     try:
-        if journal_trade_id and journal.is_active():
+        if journal_trade_id:
             spot_ltp = get_spot_ltp()
             success = journal.close_trade(
                 journal_trade_id,
