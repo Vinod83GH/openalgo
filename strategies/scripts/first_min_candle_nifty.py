@@ -112,7 +112,7 @@ EXCHANGE = os.getenv("STRATEGY_EXCHANGE", "NFO")
 
 # Derived
 STRATEGY_NAME = f"FirstMinCandle-{SYMBOL}"
-SPOT_EXCHANGE = "NSE"  # Spot data always from NSE
+SPOT_EXCHANGE = "NSE_INDEX"  # Index spot data from NSE_INDEX exchange
 
 # Lot sizes (will be fetched from API, these are fallbacks)
 LOT_SIZES = {"NIFTY": 65, "BANKNIFTY": 30}
