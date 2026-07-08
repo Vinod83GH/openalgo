@@ -72,8 +72,10 @@ class PaperJournalClient:
             if resp.status_code == 201:
                 data = resp.json()
                 return data.get("data", {}).get("trade_id")
-        except Exception:
-            pass
+            else:
+                log(f"  📓 Journal API returned {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            log(f"  📓 Journal API error: {e}")
         return None
 
     def close_trade(self, trade_id: int, **kwargs) -> bool:
