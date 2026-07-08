@@ -354,9 +354,7 @@ def place_entry(option_type):
     global entry_done, option_symbol, option_exchange, actual_quantity, journal_trade_id
 
     spot_ltp = get_spot_ltp()
-    if spot_ltp is None:
-        log("Cannot get spot LTP for option resolution")
-        return False
+    # spot_ltp is optional — used for logging only, don't block entry if quotes fail
 
     # Resolve option symbol via API
     sym, exch, lotsize = resolve_option_symbol(option_type, spot_ltp)
