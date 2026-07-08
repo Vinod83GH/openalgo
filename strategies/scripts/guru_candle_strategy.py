@@ -187,6 +187,7 @@ candle_close = None
 candle_mid = None
 bias = None
 entry_done = False
+exit_done = False
 option_symbol = None
 option_exchange = None
 actual_quantity = None
@@ -504,7 +505,8 @@ def place_entry(option_type):
 
 def place_exit(reason=""):
     """Exit the position with LIMIT order using current option premium."""
-    if not entry_done or not option_symbol:
+    global exit_done
+    if not entry_done or not option_symbol or exit_done:
         return
 
     # Fetch current option premium for LIMIT exit
@@ -536,6 +538,7 @@ def place_exit(reason=""):
 
         response = client.placesmartorder(**order_params)
         log(f"  Exit Response: {response}")
+        exit_done = True
     except Exception as e:
         log(f"  Exit Error: {e}")
 
@@ -786,6 +789,11 @@ def main():
 
     # Step 4: Monitor SL / exit
     monitor_stop_loss()
+
+    # Step 5: Forced exit — ensure position is closed before script ends
+    if entry_done and not exit_done:
+        log(f"  ⚠️ Forced exit: position still open at strategy end!")
+        place_exit(f"Strategy end - forced exit at {EXIT_TIME}")
 
     log(f"\n✅ Strategy complete for today.")
 
