@@ -27,20 +27,30 @@ paper_journal_bp = Blueprint(
 
 
 def _validate_api_key_from_body():
-    """Extract and validate API key from JSON request body (POST/PATCH)."""
+    """Extract and validate API key from JSON request body (POST/PATCH).
+    Also accepts session-based auth as fallback for web UI."""
+    from flask import session as flask_session
     data = request.get_json(silent=True) or {}
     api_key = data.get("apikey")
-    if not api_key or not verify_api_key(api_key):
-        return None, data
-    return api_key, data
+    if api_key and verify_api_key(api_key):
+        return api_key, data
+    # Fallback: check if user is logged in via session
+    if flask_session.get("user"):
+        return "session", data
+    return None, data
 
 
 def _validate_api_key_from_params():
-    """Extract and validate API key from query parameters (GET)."""
+    """Extract and validate API key from query parameters (GET).
+    Also accepts session-based auth as fallback for web UI."""
+    from flask import session as flask_session
     api_key = request.args.get("apikey")
-    if not api_key or not verify_api_key(api_key):
-        return None
-    return api_key
+    if api_key and verify_api_key(api_key):
+        return api_key
+    # Fallback: check if user is logged in via session
+    if flask_session.get("user"):
+        return "session"
+    return None
 
 
 def _parse_date(value):
