@@ -550,8 +550,9 @@ def monitor_for_entry():
 
 
 def monitor_for_retest():
-    """Step 2: After breakout, wait for retracement then re-test that closes beyond level."""
-    global entry_done
+    """Step 2: After breakout, wait for retracement then re-test.
+    If opposite side breaks out during wait, flip bias and restart Step 2."""
+    global entry_done, bias
 
     if bias == "BULLISH":
         log(f"STEP 2: Waiting for retracement then candle close > {first_candle_high} to confirm CALL")
@@ -584,8 +585,16 @@ def monitor_for_retest():
         candle_time = candles.index[-1] if hasattr(candles.index[-1], 'strftime') else "?"
 
         if bias == "BULLISH":
+            # Check for opposite-side breakout (bearish breakdown while waiting)
+            if latest_close < first_candle_low:
+                log(f"  🔄 FLIP! [{candle_time}] Close ({latest_close}) < LOW ({first_candle_low}) — switching to BEARISH")
+                bias = "BEARISH"
+                retraced = False
+                log(f"STEP 2 (RESET): Now waiting for retracement then candle close < {first_candle_low} to confirm PUT")
+                continue
+
             # Check if price has retraced (candle close ≤ HIGH)
-            if not retraced and latest_low <= first_candle_high:
+            if not retraced and latest_close <= first_candle_high:
                 retraced = True
                 log(f"  📉 Retracement detected [{candle_time}] C={latest_close} ≤ HIGH={first_candle_high}")
 
@@ -598,8 +607,16 @@ def monitor_for_retest():
                 log(f"  Candle [{candle_time}] C={latest_close} | Retraced={retraced} | Waiting for re-test above {first_candle_high}")
 
         elif bias == "BEARISH":
+            # Check for opposite-side breakout (bullish breakout while waiting)
+            if latest_close > first_candle_high:
+                log(f"  🔄 FLIP! [{candle_time}] Close ({latest_close}) > HIGH ({first_candle_high}) — switching to BULLISH")
+                bias = "BULLISH"
+                retraced = False
+                log(f"STEP 2 (RESET): Now waiting for retracement then candle close > {first_candle_high} to confirm CALL")
+                continue
+
             # Check if price has retraced (candle close ≥ LOW)
-            if not retraced and latest_high >= first_candle_low:
+            if not retraced and latest_close >= first_candle_low:
                 retraced = True
                 log(f"  📈 Retracement detected [{candle_time}] C={latest_close} ≥ LOW={first_candle_low}")
 
