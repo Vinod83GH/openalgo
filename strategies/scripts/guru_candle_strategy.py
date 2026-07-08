@@ -197,21 +197,78 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
 
+def get_nearest_expiry():
+    """Calculate the nearest expiry date in DDMMMYY format based on underlying type.
+
+    Rules:
+    - NIFTY: Weekly Tuesday expiry. If today is Tuesday, pick next week.
+    - SENSEX: Weekly Thursday expiry. If today is Thursday, pick next week.
+    - BANKNIFTY: Monthly last Tuesday expiry. If today is expiry day, pick next month.
+    - STOCKS (everything else): Monthly last Tuesday expiry. If today is expiry day, pick next month.
+    """
+    today = datetime.now().date()
+    symbol_upper = SYMBOL.upper()
+
+    if symbol_upper == "NIFTY":
+        # Weekly Tuesday expiry
+        expiry_weekday = 1  # Tuesday = 1
+        days_until = (expiry_weekday - today.weekday()) % 7
+        if days_until == 0:
+            days_until = 7
+        expiry = today + timedelta(days=days_until)
+
+    elif symbol_upper == "SENSEX":
+        # Weekly Thursday expiry
+        expiry_weekday = 3  # Thursday = 3
+        days_until = (expiry_weekday - today.weekday()) % 7
+        if days_until == 0:
+            days_until = 7
+        expiry = today + timedelta(days=days_until)
+
+    else:
+        # BANKNIFTY and all STOCKS: Monthly last Tuesday expiry
+        import calendar
+        year, month = today.year, today.month
+
+        last_day = calendar.monthrange(year, month)[1]
+        last_date = today.replace(day=last_day)
+
+        while last_date.weekday() != 1:  # Tuesday = 1
+            last_date -= timedelta(days=1)
+
+        if today >= last_date:
+            if month == 12:
+                year += 1
+                month = 1
+            else:
+                month += 1
+            last_day = calendar.monthrange(year, month)[1]
+            last_date = datetime(year, month, last_day).date()
+            while last_date.weekday() != 1:
+                last_date -= timedelta(days=1)
+
+        expiry = last_date
+
+    return expiry.strftime("%d%b%y").upper()
+
+
 def resolve_option_symbol(option_type, spot_ltp):
     """
     Use the /api/v1/optionsymbol API to resolve the correct option contract.
     Returns (symbol, exchange, lotsize) or (None, None, None) on failure.
     """
     url = f"{HOST}/api/v1/optionsymbol"
+    expiry_date = get_nearest_expiry()
     payload = {
         "apikey": API_KEY,
         "underlying": SYMBOL,
         "exchange": EXCHANGE,
+        "expiry_date": expiry_date,
         "offset": STRIKE_SELECTION,
         "option_type": option_type,
     }
 
-    log(f"Resolving option: {SYMBOL} {option_type} {STRIKE_SELECTION} (LTP={spot_ltp})...")
+    log(f"Resolving option: {SYMBOL} {option_type} {STRIKE_SELECTION} expiry={expiry_date} (LTP={spot_ltp})...")
 
     try:
         resp = requests.post(url, json=payload, timeout=10)
