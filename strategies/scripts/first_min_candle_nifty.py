@@ -354,8 +354,19 @@ def get_spot_ltp():
     return None
 
 
+def get_option_ltp(symbol, exchange):
+    """Get current LTP for an option symbol."""
+    try:
+        quotes = client.quotes(symbol=symbol, exchange=exchange)
+        if quotes and "ltp" in quotes:
+            return float(quotes["ltp"])
+    except Exception as e:
+        log(f"  Option quote error for {symbol}: {e}")
+    return None
+
+
 def place_entry(option_type):
-    """Resolve option and place entry order."""
+    """Resolve option, fetch premium, and place LIMIT entry order."""
     global entry_done, option_symbol, option_exchange, actual_quantity, journal_trade_id
 
     spot_ltp = get_spot_ltp()
@@ -371,20 +382,35 @@ def place_entry(option_type):
     option_exchange = exch
     actual_quantity = LOTS * lotsize
 
+    # Fetch option premium for LIMIT order
+    option_ltp = get_option_ltp(option_symbol, option_exchange)
+    if option_ltp is None:
+        log(f"  ⚠️ Could not fetch option LTP for {option_symbol}, falling back to MARKET order")
+        price_type = "MARKET"
+        price = 0
+    else:
+        price_type = "LIMIT"
+        price = option_ltp
+        log(f"  Option Premium: ₹{option_ltp}")
+
     log(f"")
-    log(f"🚀 ENTRY: BUY {option_symbol} | Qty={actual_quantity} ({LOTS} lots × {lotsize})")
+    log(f"🚀 ENTRY: BUY {option_symbol} | Qty={actual_quantity} ({LOTS} lots × {lotsize}) | {price_type} @ {price if price else 'MKT'}")
 
     try:
-        response = client.placesmartorder(
-            strategy=STRATEGY_NAME,
-            symbol=option_symbol,
-            action="BUY",
-            exchange=option_exchange,
-            price_type="MARKET",
-            product=PRODUCT,
-            quantity=actual_quantity,
-            position_size=actual_quantity,
-        )
+        order_params = {
+            "strategy": STRATEGY_NAME,
+            "symbol": option_symbol,
+            "action": "BUY",
+            "exchange": option_exchange,
+            "price_type": price_type,
+            "product": PRODUCT,
+            "quantity": actual_quantity,
+            "position_size": actual_quantity,
+        }
+        if price_type == "LIMIT":
+            order_params["price"] = price
+
+        response = client.placesmartorder(**order_params)
         log(f"  Order Response: {response}")
         entry_done = True
 
@@ -397,6 +423,7 @@ def place_entry(option_type):
                 entry_time=datetime.now().isoformat(),
                 entry_spot_price=spot_ltp,
                 entry_option_symbol=option_symbol,
+                entry_option_price=option_ltp,
                 entry_quantity=actual_quantity,
                 entry_action="BUY",
                 custom_metadata={
@@ -405,6 +432,7 @@ def place_entry(option_type):
                     "first_candle_close": first_candle_close,
                     "first_candle_mid": first_candle_mid,
                     "bias": bias,
+                    "entry_price_type": price_type,
                 },
             )
             if trade_id:
@@ -422,24 +450,38 @@ def place_entry(option_type):
 
 
 def place_exit(reason=""):
-    """Exit the position."""
+    """Exit the position with LIMIT order using current option premium."""
     if not entry_done or not option_symbol:
         return
 
+    # Fetch current option premium for LIMIT exit
+    option_ltp = get_option_ltp(option_symbol, option_exchange)
+    if option_ltp is None:
+        log(f"  ⚠️ Could not fetch option LTP for exit, falling back to MARKET order")
+        price_type = "MARKET"
+        price = 0
+    else:
+        price_type = "LIMIT"
+        price = option_ltp
+
     log(f"")
-    log(f"🛑 EXIT ({reason}): SELL {option_symbol} | Qty={actual_quantity}")
+    log(f"🛑 EXIT ({reason}): SELL {option_symbol} | Qty={actual_quantity} | {price_type} @ {price if price else 'MKT'}")
 
     try:
-        response = client.placesmartorder(
-            strategy=STRATEGY_NAME,
-            symbol=option_symbol,
-            action="SELL",
-            exchange=option_exchange,
-            price_type="MARKET",
-            product=PRODUCT,
-            quantity=actual_quantity,
-            position_size=0,
-        )
+        order_params = {
+            "strategy": STRATEGY_NAME,
+            "symbol": option_symbol,
+            "action": "SELL",
+            "exchange": option_exchange,
+            "price_type": price_type,
+            "product": PRODUCT,
+            "quantity": actual_quantity,
+            "position_size": 0,
+        }
+        if price_type == "LIMIT":
+            order_params["price"] = price
+
+        response = client.placesmartorder(**order_params)
         log(f"  Exit Response: {response}")
     except Exception as e:
         log(f"  Exit Error: {e}")
@@ -452,10 +494,11 @@ def place_exit(reason=""):
                 journal_trade_id,
                 exit_time=datetime.now().isoformat(),
                 exit_spot_price=spot_ltp,
+                exit_option_price=option_ltp,
                 exit_reason=reason,
             )
             if success:
-                log(f"  📓 Journal: Trade closed (ID={journal_trade_id})")
+                log(f"  📓 Journal: Trade closed (ID={journal_trade_id}) | Exit Premium: ₹{option_ltp}")
             else:
                 log(f"  📓 Journal: close_trade failed")
     except Exception as e:
