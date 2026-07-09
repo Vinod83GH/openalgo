@@ -417,6 +417,12 @@ def place_entry(option_type):
 
         response = client.placesmartorder(**order_params)
         log(f"  Order Response: {response}")
+
+        # Only mark entry done and log journal if order was successful
+        if not isinstance(response, dict) or response.get("status") != "success":
+            log(f"  ❌ Order FAILED. Not marking entry_done.")
+            return False
+
         entry_done = True
 
         # Log trade to paper journal
