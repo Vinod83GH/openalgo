@@ -63,7 +63,9 @@ class PaperJournalClient:
     def open_trade(self, **kwargs) -> int | None:
         """Open a new trade record. Returns trade_id or None on failure."""
         try:
-            payload = {"apikey": self.api_key, **kwargs}
+            # Filter out None values to avoid JSON serialization issues
+            filtered_kwargs = {k: v for k, v in kwargs.items() if v is not None}
+            payload = {"apikey": self.api_key, **filtered_kwargs}
             resp = requests.post(
                 f"{self.host}/api/v1/paperjournal/trade",
                 json=payload,

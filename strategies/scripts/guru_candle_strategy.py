@@ -62,7 +62,9 @@ class PaperJournalClient:
     def open_trade(self, **kwargs) -> int | None:
         """Open a new trade record. Returns trade_id or None."""
         try:
-            payload = {"apikey": self.api_key, **kwargs}
+            # Filter out None values to avoid JSON serialization issues
+            filtered_kwargs = {k: v for k, v in kwargs.items() if v is not None}
+            payload = {"apikey": self.api_key, **filtered_kwargs}
             resp = requests.post(
                 f"{self.host}/api/v1/paperjournal/trade",
                 json=payload,
@@ -437,16 +439,24 @@ def place_entry(option_type):
     option_exchange = exch
     actual_quantity = LOTS * lotsize
 
-    # Fetch option premium for LIMIT order
-    option_ltp = get_option_ltp(option_symbol, option_exchange)
+    # Fetch option premium for LIMIT order (retry up to 3 times)
+    option_ltp = None
+    for retry in range(3):
+        option_ltp = get_option_ltp(option_symbol, option_exchange)
+        if option_ltp is not None:
+            break
+        log(f"  Option LTP fetch attempt {retry + 1}/3 failed, retrying...")
+        time.sleep(2)
+
     if option_ltp is None:
-        log(f"  ⚠️ Could not fetch option LTP for {option_symbol}, falling back to MARKET order")
-        price_type = "MARKET"
-        price = 0
-    else:
-        price_type = "LIMIT"
-        price = option_ltp
-        log(f"  Option Premium: ₹{option_ltp}")
+        # For stock options, MARKET orders are blocked by Zerodha — must skip
+        log(f"  ❌ Could not fetch option LTP for {option_symbol} after 3 attempts.")
+        log(f"  ❌ Cannot place order without price (MARKET blocked for stock options). Skipping entry.")
+        return False
+
+    price_type = "LIMIT"
+    price = option_ltp
+    log(f"  Option Premium: ₹{option_ltp}")
 
     log(f"")
     log(f"🚀 ENTRY: BUY {option_symbol} | Qty={actual_quantity} ({LOTS} lots × {lotsize}) | {price_type} @ {price if price else 'MKT'}")
@@ -511,12 +521,20 @@ def place_exit(reason=""):
     if not entry_done or not option_symbol or exit_done:
         return
 
-    # Fetch current option premium for LIMIT exit
-    option_ltp = get_option_ltp(option_symbol, option_exchange)
+    # Fetch current option premium for LIMIT exit (retry up to 3 times)
+    option_ltp = None
+    for retry in range(3):
+        option_ltp = get_option_ltp(option_symbol, option_exchange)
+        if option_ltp is not None:
+            break
+        time.sleep(2)
+
     if option_ltp is None:
-        log(f"  ⚠️ Could not fetch option LTP for exit, falling back to MARKET order")
-        price_type = "MARKET"
-        price = 0
+        log(f"  ⚠️ Could not fetch option LTP for exit after 3 attempts, using LIMIT at last known price or skipping")
+        # For exit we must close - but MARKET is blocked for stock options
+        # Try to use a very low price as a safety LIMIT order
+        price_type = "LIMIT"
+        price = 0.05  # Minimum tick — will likely get filled at best available
     else:
         price_type = "LIMIT"
         price = option_ltp

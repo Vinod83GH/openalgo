@@ -63,6 +63,15 @@ def open_trade(trade_data: dict) -> dict:
         if isinstance(fields["custom_metadata"], dict):
             fields["custom_metadata"] = json.dumps(fields["custom_metadata"])
 
+    # Convert trade_date string to date object if needed
+    if "trade_date" in fields and fields["trade_date"] is not None:
+        if isinstance(fields["trade_date"], str):
+            from datetime import datetime as dt
+            try:
+                fields["trade_date"] = dt.strptime(fields["trade_date"], "%Y-%m-%d").date()
+            except ValueError:
+                fields["trade_date"] = None
+
     trade = create_trade(**fields)
     return {"status": "success", "data": {"trade_id": trade.id}}
 
