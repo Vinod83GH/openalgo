@@ -352,8 +352,12 @@ def get_spot_ltp():
     """Get current spot LTP."""
     try:
         quotes = client.quotes(symbol=SYMBOL, exchange=SPOT_EXCHANGE)
-        if quotes and "ltp" in quotes:
-            return float(quotes["ltp"])
+        if quotes and isinstance(quotes, dict):
+            # Handle both flat {"ltp": ...} and wrapped {"data": {"ltp": ...}} formats
+            if "ltp" in quotes:
+                return float(quotes["ltp"])
+            elif "data" in quotes and isinstance(quotes["data"], dict) and "ltp" in quotes["data"]:
+                return float(quotes["data"]["ltp"])
     except Exception as e:
         log(f"  Quote error: {e}")
     return None
@@ -363,8 +367,11 @@ def get_option_ltp(symbol, exchange):
     """Get current LTP for an option symbol."""
     try:
         quotes = client.quotes(symbol=symbol, exchange=exchange)
-        if quotes and "ltp" in quotes:
-            return float(quotes["ltp"])
+        if quotes and isinstance(quotes, dict):
+            if "ltp" in quotes:
+                return float(quotes["ltp"])
+            elif "data" in quotes and isinstance(quotes["data"], dict) and "ltp" in quotes["data"]:
+                return float(quotes["data"]["ltp"])
     except Exception as e:
         log(f"  Option quote error for {symbol}: {e}")
     return None
