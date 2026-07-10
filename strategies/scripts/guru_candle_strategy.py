@@ -135,7 +135,7 @@ OPTIONS_EXCHANGE = "NFO"
 
 # Fallback lot sizes for common stock options (will use API resolution first)
 STOCK_LOT_SIZES = {
-    "RELIANCE": 250,
+    "RELIANCE": 500,
     "TCS": 175,
     "HDFCBANK": 550,
     "INFY": 300,
