@@ -114,6 +114,7 @@ EXIT_TIME = os.getenv("STRATEGY_EXIT_TIME", "15:15")
 PRODUCT = os.getenv("STRATEGY_PRODUCT", "MIS")
 EXCHANGE = os.getenv("STRATEGY_EXCHANGE", "NFO")
 TARGET_PCT = float(os.getenv("STRATEGY_TARGET_PCT", "0"))  # Profit target %. 0 = disabled. E.g., 15 = exit at 15% profit
+ORDER_TYPE = os.getenv("STRATEGY_ORDER_TYPE", "MARKET")  # MARKET or LIMIT
 
 # Derived
 STRATEGY_NAME = f"FirstMinCandle-{SYMBOL}"
@@ -396,16 +397,22 @@ def place_entry(option_type):
     option_exchange = exch
     actual_quantity = LOTS * lotsize
 
-    # Fetch option premium for LIMIT order
+    # Fetch option premium (for journal logging and LIMIT orders)
     option_ltp = get_option_ltp(option_symbol, option_exchange)
-    if option_ltp is None:
-        log(f"  ⚠️ Could not fetch option LTP for {option_symbol}, falling back to MARKET order")
+    if option_ltp:
+        log(f"  Option Premium: ₹{option_ltp}")
+
+    # Determine order type from config
+    if ORDER_TYPE == "MARKET":
         price_type = "MARKET"
         price = 0
-    else:
+    elif option_ltp:
         price_type = "LIMIT"
         price = option_ltp
-        log(f"  Option Premium: ₹{option_ltp}")
+    else:
+        log(f"  ⚠️ LIMIT requested but no LTP available, falling back to MARKET")
+        price_type = "MARKET"
+        price = 0
 
     log(f"")
     log(f"🚀 ENTRY: BUY {option_symbol} | Qty={actual_quantity} ({LOTS} lots × {lotsize}) | {price_type} @ {price if price else 'MKT'}")
@@ -435,32 +442,33 @@ def place_entry(option_type):
         entry_done = True
         entry_option_price_saved = option_ltp  # Save for profit target calculation
 
-        # Log trade to paper journal
+        # Log trade to paper journal (only in Analyzer mode)
         try:
-            trade_id = journal.open_trade(
-                strategy_name=STRATEGY_NAME,
-                direction=bias,
-                trade_date=datetime.now().strftime("%Y-%m-%d"),
-                entry_time=datetime.now().isoformat(),
-                entry_spot_price=spot_ltp,
-                entry_option_symbol=option_symbol,
-                entry_option_price=option_ltp,
-                entry_quantity=actual_quantity,
-                entry_action="BUY",
-                custom_metadata={
-                    "first_candle_high": first_candle_high,
-                    "first_candle_low": first_candle_low,
-                    "first_candle_close": first_candle_close,
-                    "first_candle_mid": first_candle_mid,
-                    "bias": bias,
-                    "entry_price_type": price_type,
-                },
-            )
-            if trade_id:
-                journal_trade_id = trade_id
-                log(f"  📓 Journal: Trade opened (ID={trade_id})")
-            else:
-                log(f"  📓 Journal: open_trade returned no ID")
+            if journal.is_active():
+                trade_id = journal.open_trade(
+                    strategy_name=STRATEGY_NAME,
+                    direction=bias,
+                    trade_date=datetime.now().strftime("%Y-%m-%d"),
+                    entry_time=datetime.now().isoformat(),
+                    entry_spot_price=spot_ltp,
+                    entry_option_symbol=option_symbol,
+                    entry_option_price=option_ltp,
+                    entry_quantity=actual_quantity,
+                    entry_action="BUY",
+                    custom_metadata={
+                        "first_candle_high": first_candle_high,
+                        "first_candle_low": first_candle_low,
+                        "first_candle_close": first_candle_close,
+                        "first_candle_mid": first_candle_mid,
+                        "bias": bias,
+                        "entry_price_type": price_type,
+                    },
+                )
+                if trade_id:
+                    journal_trade_id = trade_id
+                    log(f"  📓 Journal: Trade opened (ID={trade_id})")
+                else:
+                    log(f"  📓 Journal: open_trade returned no ID")
         except Exception as e:
             log(f"  📓 Journal: Error logging entry - {e}")
 
@@ -476,15 +484,20 @@ def place_exit(reason=""):
     if not entry_done or not option_symbol or exit_done:
         return
 
-    # Fetch current option premium for LIMIT exit
+    # Fetch current option premium (for journal logging)
     option_ltp = get_option_ltp(option_symbol, option_exchange)
-    if option_ltp is None:
-        log(f"  ⚠️ Could not fetch option LTP for exit, falling back to MARKET order")
+
+    # Determine order type from config
+    if ORDER_TYPE == "MARKET":
         price_type = "MARKET"
         price = 0
-    else:
+    elif option_ltp:
         price_type = "LIMIT"
         price = option_ltp
+    else:
+        log(f"  ⚠️ LIMIT requested but no LTP available for exit, falling back to MARKET")
+        price_type = "MARKET"
+        price = 0
 
     log(f"")
     log(f"🛑 EXIT ({reason}): SELL {option_symbol} | Qty={actual_quantity} | {price_type} @ {price if price else 'MKT'}")
@@ -516,9 +529,9 @@ def place_exit(reason=""):
     except Exception as e:
         log(f"  Exit Error: {e}")
 
-    # Log exit to paper journal
+    # Log exit to paper journal (only in Analyzer mode)
     try:
-        if journal_trade_id:
+        if journal_trade_id and journal.is_active():
             spot_ltp = get_spot_ltp()
             success = journal.close_trade(
                 journal_trade_id,

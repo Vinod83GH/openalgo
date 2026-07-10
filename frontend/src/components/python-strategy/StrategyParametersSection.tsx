@@ -246,6 +246,27 @@ export default function StrategyParametersSection({
           <p className="text-sm text-red-500">{errors.STRATEGY_TARGET_PCT}</p>
         )}
       </div>
+
+      {/* Order Type */}
+      <div className="space-y-2">
+        <Label htmlFor="strategy-order-type">Order Type</Label>
+        <Select
+          value={values.STRATEGY_ORDER_TYPE}
+          onValueChange={(value) => handleChange('STRATEGY_ORDER_TYPE', value)}
+          disabled={disabled}
+        >
+          <SelectTrigger id="strategy-order-type">
+            <SelectValue placeholder="Select order type" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="MARKET">MARKET</SelectItem>
+            <SelectItem value="LIMIT">LIMIT</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          MARKET for index options, LIMIT for stock options (Zerodha blocks MARKET for stocks).
+        </p>
+      </div>
     </div>
   )
 }

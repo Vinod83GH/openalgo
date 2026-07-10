@@ -15,6 +15,7 @@ export interface StrategyEnvVars {
   STRATEGY_PRODUCT: string
   STRATEGY_EXCHANGE: string
   STRATEGY_TARGET_PCT: string
+  STRATEGY_ORDER_TYPE: string
 }
 
 /**
@@ -30,6 +31,7 @@ export const STRATEGY_FIELD_MAP: Record<string, string> = {
   product: 'STRATEGY_PRODUCT',
   exchange: 'STRATEGY_EXCHANGE',
   targetPct: 'STRATEGY_TARGET_PCT',
+  orderType: 'STRATEGY_ORDER_TYPE',
 }
 
 /**
@@ -90,5 +92,6 @@ export function envVarsToFormState(envVars: Record<string, string>): StrategyEnv
     STRATEGY_PRODUCT: envVars['STRATEGY_PRODUCT'] || '',
     STRATEGY_EXCHANGE: envVars['STRATEGY_EXCHANGE'] || '',
     STRATEGY_TARGET_PCT: envVars['STRATEGY_TARGET_PCT'] || '',
+    STRATEGY_ORDER_TYPE: envVars['STRATEGY_ORDER_TYPE'] || '',
   }
 }
