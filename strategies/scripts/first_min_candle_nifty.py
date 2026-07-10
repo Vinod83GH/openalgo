@@ -113,6 +113,7 @@ ENTRY_END = os.getenv("STRATEGY_ENTRY_END", "10:30")
 EXIT_TIME = os.getenv("STRATEGY_EXIT_TIME", "15:15")
 PRODUCT = os.getenv("STRATEGY_PRODUCT", "MIS")
 EXCHANGE = os.getenv("STRATEGY_EXCHANGE", "NFO")
+TARGET_PCT = float(os.getenv("STRATEGY_TARGET_PCT", "0"))  # Profit target %. 0 = disabled. E.g., 15 = exit at 15% profit
 
 # Derived
 STRATEGY_NAME = f"FirstMinCandle-{SYMBOL}"
@@ -151,6 +152,7 @@ option_symbol = None
 option_exchange = None
 actual_quantity = None
 journal_trade_id = None
+entry_option_price_saved = None  # Saved for profit % calculation
 
 
 def log(msg):
@@ -427,10 +429,11 @@ def place_entry(option_type):
 
         # Only mark entry done and log journal if order was successful
         if not isinstance(response, dict) or response.get("status") != "success":
-            log(f"  ❌ Order FAILED. Not marking entry_done.")
+            log(f"  ❌ Order placement FAILED. Not marking entry_done.")
             return False
 
         entry_done = True
+        entry_option_price_saved = option_ltp  # Save for profit target calculation
 
         # Log trade to paper journal
         try:
@@ -502,7 +505,14 @@ def place_exit(reason=""):
 
         response = client.placesmartorder(**order_params)
         log(f"  Exit Response: {response}")
+
+        # Only mark entry done and log journal if order was successful
+        if not isinstance(response, dict) or response.get("status") != "success":
+            log(f"  ❌ Exit Order FAILED. Not marking exit_done.")
+            return False
+
         exit_done = True
+
     except Exception as e:
         log(f"  Exit Error: {e}")
 
@@ -693,11 +703,14 @@ def monitor_for_retest():
 
 
 def monitor_stop_loss():
-    """Monitor 1-min candles for SL or exit time (candle-based)."""
+    """Monitor 1-min candles for SL, profit target, or exit time (candle-based)."""
     if not entry_done:
         return
 
-    log(f"Monitoring SL & exit time via 1-min candles (exit at {EXIT_TIME})...")
+    if TARGET_PCT > 0:
+        log(f"Monitoring SL, Profit Target ({TARGET_PCT}%), & exit time via 1-min candles (exit at {EXIT_TIME})...")
+    else:
+        log(f"Monitoring SL & exit time via 1-min candles (exit at {EXIT_TIME})...")
 
     while True:
         # Check exit time
@@ -715,7 +728,17 @@ def monitor_stop_loss():
             place_exit(f"Exit time {EXIT_TIME}")
             return
 
-        # Fetch latest candles
+        # Check profit target if enabled and entry price is known
+        if TARGET_PCT > 0 and entry_option_price_saved and entry_option_price_saved > 0:
+            current_option_ltp = get_option_ltp(option_symbol, option_exchange)
+            if current_option_ltp is not None:
+                profit_pct = ((current_option_ltp - entry_option_price_saved) / entry_option_price_saved) * 100
+                if profit_pct >= TARGET_PCT:
+                    log(f"  🎯 PROFIT TARGET HIT! Option LTP={current_option_ltp}, Entry={entry_option_price_saved}, Profit={profit_pct:.1f}% ≥ {TARGET_PCT}%")
+                    place_exit(f"Profit Target {profit_pct:.1f}% (target={TARGET_PCT}%)")
+                    return
+
+        # Fetch latest candles for SL check
         candles = get_latest_candles()
         if candles is None or (hasattr(candles, 'empty') and candles.empty):
             log(f"  No candle data for SL check, retrying...")

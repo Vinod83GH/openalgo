@@ -14,6 +14,7 @@ export interface StrategyEnvVars {
   STRATEGY_EXIT_TIME: string
   STRATEGY_PRODUCT: string
   STRATEGY_EXCHANGE: string
+  STRATEGY_TARGET_PCT: string
 }
 
 /**
@@ -28,6 +29,7 @@ export const STRATEGY_FIELD_MAP: Record<string, string> = {
   exitTime: 'STRATEGY_EXIT_TIME',
   product: 'STRATEGY_PRODUCT',
   exchange: 'STRATEGY_EXCHANGE',
+  targetPct: 'STRATEGY_TARGET_PCT',
 }
 
 /**
@@ -87,5 +89,6 @@ export function envVarsToFormState(envVars: Record<string, string>): StrategyEnv
     STRATEGY_EXIT_TIME: envVars['STRATEGY_EXIT_TIME'] || '',
     STRATEGY_PRODUCT: envVars['STRATEGY_PRODUCT'] || '',
     STRATEGY_EXCHANGE: envVars['STRATEGY_EXCHANGE'] || '',
+    STRATEGY_TARGET_PCT: envVars['STRATEGY_TARGET_PCT'] || '',
   }
 }

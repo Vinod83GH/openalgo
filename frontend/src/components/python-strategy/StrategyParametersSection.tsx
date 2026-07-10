@@ -224,6 +224,28 @@ export default function StrategyParametersSection({
           )}
         </div>
       </div>
+
+      {/* Target Profit % */}
+      <div className="space-y-2">
+        <Label htmlFor="strategy-target-pct">Target Profit %</Label>
+        <Input
+          id="strategy-target-pct"
+          type="number"
+          min={0}
+          step={1}
+          placeholder="0 (disabled)"
+          value={values.STRATEGY_TARGET_PCT}
+          onChange={(e) => handleChange('STRATEGY_TARGET_PCT', e.target.value)}
+          disabled={disabled}
+          className={errors.STRATEGY_TARGET_PCT ? 'border-red-500' : ''}
+        />
+        <p className="text-xs text-muted-foreground">
+          Exit when option profit reaches this %. Set to 0 to disable.
+        </p>
+        {errors.STRATEGY_TARGET_PCT && (
+          <p className="text-sm text-red-500">{errors.STRATEGY_TARGET_PCT}</p>
+        )}
+      </div>
     </div>
   )
 }
