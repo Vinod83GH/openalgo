@@ -147,7 +147,7 @@ def test_place_buy_order():
         "product": TEST_PRODUCT,
         "quantity": TEST_QUANTITY,
         "position_size": TEST_QUANTITY,
-        "price": 0.05,  # Very low price — won't fill but tests the flow
+        "price": 66
     }
 
     log(f"  Placing BUY order: {test_sym} on {test_exch} qty={TEST_QUANTITY}")

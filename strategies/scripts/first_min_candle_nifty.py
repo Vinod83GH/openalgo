@@ -432,7 +432,7 @@ def place_entry(option_type):
             order_params["price"] = price
 
         if price_type == "MARKET":
-            order_params["market_protection"] = 2
+            order_params["market_protection"] = -1
 
         response = client.placesmartorder(**order_params)
         log(f"  Order Response: {response}")
@@ -518,6 +518,9 @@ def place_exit(reason=""):
         }
         if price_type == "LIMIT":
             order_params["price"] = price
+        
+        if price_type == "MARKET":
+            order_params["market_protection"] = -1
 
         response = client.placesmartorder(**order_params)
         log(f"  Exit Response: {response}")
