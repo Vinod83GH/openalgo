@@ -419,14 +419,14 @@ def get_spot_ltp():
 
 
 def get_option_ltp(symbol, exchange):
-    """Get current LTP for an option symbol."""
+    """Get current LTP for an option symbol, rounded to nearest whole number."""
     try:
         quotes = client.quotes(symbol=symbol, exchange=exchange)
         if quotes and isinstance(quotes, dict):
             if "ltp" in quotes:
-                return float(quotes["ltp"])
+                return round(float(quotes["ltp"]))
             elif "data" in quotes and isinstance(quotes["data"], dict) and "ltp" in quotes["data"]:
-                return float(quotes["data"]["ltp"])
+                return round(float(quotes["data"]["ltp"]))
     except Exception as e:
         log(f"  Option quote error for {symbol}: {e}")
     return None
