@@ -25,6 +25,7 @@ Configuration (via Environment Variables on Python Strategy page):
 import os
 import time
 import requests
+import numpy as np
 from datetime import datetime, timedelta
 
 from openalgo import api
@@ -123,6 +124,9 @@ EXIT_TIME = os.getenv("STRATEGY_EXIT_TIME", "15:15")
 PRODUCT = os.getenv("STRATEGY_PRODUCT", "MIS")
 TARGET_PCT = float(os.getenv("STRATEGY_TARGET_PCT", "0"))  # Profit target %. 0 = disabled. E.g., 15 = exit at 15% profit
 ORDER_TYPE = os.getenv("STRATEGY_ORDER_TYPE", "LIMIT")  # MARKET or LIMIT (default LIMIT for stock options)
+ATR_MULTIPLIER = float(os.getenv("STRATEGY_ATR_MULTIPLIER", "2"))
+RETRACEMENT_BUFFER = float(os.getenv("STRATEGY_RETRACEMENT_BUFFER", "2"))
+ATR_PERIOD = int(os.getenv("STRATEGY_ATR_PERIOD", "7"))
 
 # The candle to monitor (11:39 AM)
 CANDLE_TIME = "11:39"
@@ -199,6 +203,8 @@ option_exchange = None
 actual_quantity = None
 journal_trade_id = None
 entry_option_price_saved = None  # Saved for profit % calculation
+highest_spot_since_entry = None
+trailing_stop_level = None
 
 
 def log(msg):
@@ -697,9 +703,70 @@ def monitor_for_entry():
             return
 
 
+def check_retracement(latest_close, latest_high, latest_low, retraced, candle_time):
+    """Check retracement and re-test conditions for the current candle."""
+    if bias == "BULLISH":
+        if not retraced and latest_close <= candle_high + RETRACEMENT_BUFFER:
+            log(f"  📉 Retracement detected [{candle_time}] C={latest_close} ≤ HIGH+buf={candle_high + RETRACEMENT_BUFFER}")
+            return True, False, None
+        if retraced and latest_high >= candle_high - RETRACEMENT_BUFFER and latest_close > candle_high - RETRACEMENT_BUFFER:
+            log(f"  ✅ STEP 2 CONFIRMED [{candle_time}]: Re-test! H={latest_high} touched HIGH-buf={candle_high - RETRACEMENT_BUFFER}, C={latest_close} > HIGH-buf")
+            return retraced, True, "CE"
+        if retraced:
+            log(f"  Candle [{candle_time}] C={latest_close} | Retraced={retraced} | Waiting for re-test above {candle_high - RETRACEMENT_BUFFER}")
+    elif bias == "BEARISH":
+        if not retraced and latest_close >= candle_low - RETRACEMENT_BUFFER:
+            log(f"  📈 Retracement detected [{candle_time}] C={latest_close} ≥ LOW-buf={candle_low - RETRACEMENT_BUFFER}")
+            return True, False, None
+        if retraced and latest_low <= candle_low + RETRACEMENT_BUFFER and latest_close < candle_low + RETRACEMENT_BUFFER:
+            log(f"  ✅ STEP 2 CONFIRMED [{candle_time}]: Re-test! L={latest_low} touched LOW+buf={candle_low + RETRACEMENT_BUFFER}, C={latest_close} < LOW+buf")
+            return retraced, True, "PE"
+        if retraced:
+            log(f"  Candle [{candle_time}] C={latest_close} | Retraced={retraced} | Waiting for re-test below {candle_low + RETRACEMENT_BUFFER}")
+    return retraced, False, None
+
+
+def check_bias_flip(latest_close, candle_time):
+    """Check if opposite side breaks out during retracement wait — flip bias."""
+    global bias
+    if bias == "BULLISH" and latest_close < candle_low:
+        log(f"  🔄 FLIP! [{candle_time}] Close ({latest_close}) < LOW ({candle_low}) — switching to BEARISH")
+        bias = "BEARISH"
+        log(f"STEP 2 (RESET): Now waiting for retracement then candle close < {candle_low} to confirm PUT")
+        return True
+    elif bias == "BEARISH" and latest_close > candle_high:
+        log(f"  🔄 FLIP! [{candle_time}] Close ({latest_close}) > HIGH ({candle_high}) — switching to BULLISH")
+        bias = "BULLISH"
+        log(f"STEP 2 (RESET): Now waiting for retracement then candle close > {candle_high} to confirm CALL")
+        return True
+    return False
+
+
+def compute_atr():
+    """Compute ATR manually using Wilder's smoothing on 1-min candles."""
+    candles = get_latest_candles()
+    if candles is None or len(candles) < ATR_PERIOD + 1:
+        return None
+    high = np.array(candles["high"], dtype=float)
+    low = np.array(candles["low"], dtype=float)
+    close = np.array(candles["close"], dtype=float)
+    prev_close = np.roll(close, 1)
+    prev_close[0] = close[0]
+    tr1 = high - low
+    tr2 = np.abs(high - prev_close)
+    tr3 = np.abs(low - prev_close)
+    true_range = np.maximum(tr1, np.maximum(tr2, tr3))
+    tr_valid = true_range[1:]
+    if len(tr_valid) < ATR_PERIOD:
+        return None
+    atr_value = np.mean(tr_valid[:ATR_PERIOD])
+    for i in range(ATR_PERIOD, len(tr_valid)):
+        atr_value = (atr_value * (ATR_PERIOD - 1) + tr_valid[i]) / ATR_PERIOD
+    return round(atr_value, 2)
+
+
 def monitor_for_retest():
-    """Step 2: After breakout, wait for retracement then re-test.
-    If opposite side breaks out during wait, flip bias and restart Step 2."""
+    """Step 2: After breakout, wait for retracement then re-test."""
     global entry_done, bias
 
     if bias == "BULLISH":
@@ -710,17 +777,14 @@ def monitor_for_retest():
     retraced = False
 
     while not entry_done:
-        # Check entry window timeout
         if is_past_time(ENTRY_END_H, ENTRY_END_M):
             log(f"⏰ Entry window closed ({ENTRY_END}). Retracement not confirmed.")
             return
 
-        # Wait for next candle
         now = datetime.now()
         seconds_to_next_min = 60 - now.second + 5
         time.sleep(seconds_to_next_min)
 
-        # Fetch latest candles
         candles = get_latest_candles()
         if candles is None or (hasattr(candles, 'empty') and candles.empty):
             continue
@@ -729,75 +793,56 @@ def monitor_for_retest():
         latest_high = round(float(latest["high"]), 2)
         latest_low = round(float(latest["low"]), 2)
         latest_close = round(float(latest["close"]), 2)
-
         candle_time = candles.index[-1] if hasattr(candles.index[-1], 'strftime') else "?"
 
-        if bias == "BULLISH":
-            # Check for opposite-side breakout (bearish breakdown while waiting)
-            if latest_close < candle_low:
-                log(f"  🔄 FLIP! [{candle_time}] Close ({latest_close}) < LOW ({candle_low}) — switching to BEARISH")
-                bias = "BEARISH"
-                retraced = False
-                log(f"STEP 2 (RESET): Now waiting for retracement then candle close < {candle_low} to confirm PUT")
-                continue
+        if check_bias_flip(latest_close, candle_time):
+            retraced = False
+            continue
 
-            if not retraced and latest_close <= candle_high:
-                retraced = True
-                log(f"  📉 Retracement detected [{candle_time}] C={latest_close} ≤ HIGH={candle_high}")
-            elif retraced and latest_high >= candle_high and latest_close > candle_high:
-                log(f"  ✅ STEP 2 CONFIRMED [{candle_time}]: Re-test! H={latest_high} touched HIGH, C={latest_close} > HIGH={candle_high}")
-                place_entry("CE")
-                return
-            else:
-                log(f"  Candle [{candle_time}] C={latest_close} | Retraced={retraced} | Waiting for re-test above {candle_high}")
-
-        elif bias == "BEARISH":
-            # Check for opposite-side breakout (bullish breakout while waiting)
-            if latest_close > candle_high:
-                log(f"  🔄 FLIP! [{candle_time}] Close ({latest_close}) > HIGH ({candle_high}) — switching to BULLISH")
-                bias = "BULLISH"
-                retraced = False
-                log(f"STEP 2 (RESET): Now waiting for retracement then candle close > {candle_high} to confirm CALL")
-                continue
-
-            if not retraced and latest_close >= candle_low:
-                retraced = True
-                log(f"  📈 Retracement detected [{candle_time}] C={latest_close} ≥ LOW={candle_low}")
-            elif retraced and latest_low <= candle_low and latest_close < candle_low:
-                log(f"  ✅ STEP 2 CONFIRMED [{candle_time}]: Re-test! L={latest_low} touched LOW, C={latest_close} < LOW={candle_low}")
-                place_entry("PE")
-                return
-            else:
-                log(f"  Candle [{candle_time}] C={latest_close} | Retraced={retraced} | Waiting for re-test below {candle_low}")
+        retraced, confirmed, option_type = check_retracement(latest_close, latest_high, latest_low, retraced, candle_time)
+        if confirmed:
+            place_entry(option_type)
+            return
 
 
 def monitor_stop_loss():
-    """Monitor 1-min candles for SL, profit target, or exit time (candle-based)."""
+    """Monitor using ATR trailing stop on SPOT price, profit target, and exit time."""
+    global highest_spot_since_entry, trailing_stop_level
+
     if not entry_done:
         return
 
-    if TARGET_PCT > 0:
-        log(f"Monitoring SL, Profit Target ({TARGET_PCT}%), & exit time via 1-min candles (exit at {EXIT_TIME})...")
+    spot_ltp = get_spot_ltp()
+    if spot_ltp is None:
+        spot_ltp = candle_close
+
+    if bias == "BULLISH":
+        highest_spot_since_entry = spot_ltp
+        trailing_stop_level = candle_low
     else:
-        log(f"Monitoring SL & exit time via 1-min candles (exit at {EXIT_TIME})...")
+        highest_spot_since_entry = spot_ltp
+        trailing_stop_level = candle_high
+
+    log(f"Monitoring with ATR Trailing Stop (ATR period={ATR_PERIOD}, multiplier={ATR_MULTIPLIER})...")
+    log(f"  Direction: {bias} | Initial TSL: {trailing_stop_level} | Spot: {spot_ltp}")
+    if TARGET_PCT > 0:
+        log(f"  Profit Target: {TARGET_PCT}% | Exit Time: {EXIT_TIME}")
+    else:
+        log(f"  Exit Time: {EXIT_TIME}")
 
     while True:
-        # Check exit time
         if is_past_time(EXIT_H, EXIT_M):
             place_exit(f"Exit time {EXIT_TIME}")
             return
 
-        # Wait for the current minute to close
         now = datetime.now()
         seconds_to_next_min = 60 - now.second + 5
         time.sleep(seconds_to_next_min)
 
-        # Check exit time again after sleep
         if is_past_time(EXIT_H, EXIT_M):
             place_exit(f"Exit time {EXIT_TIME}")
             return
 
-        # Check profit target if enabled and entry price is known
         if TARGET_PCT > 0 and entry_option_price_saved and entry_option_price_saved > 0:
             current_option_ltp = get_option_ltp(option_symbol, option_exchange)
             if current_option_ltp is not None:
@@ -807,27 +852,41 @@ def monitor_stop_loss():
                     place_exit(f"Profit Target {profit_pct:.1f}% (target={TARGET_PCT}%)")
                     return
 
-        # Fetch latest candles for SL check
         candles = get_latest_candles()
         if candles is None or (hasattr(candles, 'empty') and candles.empty):
-            log(f"  No candle data for SL check, retrying...")
+            log(f"  No candle data for TSL check, retrying...")
             continue
 
-        latest = candles.iloc[-1]
-        latest_high = round(float(latest["high"]), 2)
-        latest_low = round(float(latest["low"]), 2)
-        latest_close = round(float(latest["close"]), 2)
+        latest_close = round(float(candles.iloc[-1]["close"]), 2)
+        candle_time_str = candles.index[-1] if hasattr(candles.index[-1], 'strftime') else "?"
 
-        candle_time = candles.index[-1] if hasattr(candles.index[-1], 'strftime') else "?"
-        log(f"  SL Check [{candle_time}] H={latest_high} L={latest_low} C={latest_close}")
+        current_atr = compute_atr()
 
-        if bias == "BULLISH" and latest_close < candle_low:
-            place_exit(f"SL HIT - Candle Close {latest_close} < Guru Low {candle_low}")
-            return
+        if bias == "BULLISH":
+            highest_spot_since_entry = max(highest_spot_since_entry, latest_close)
+            if current_atr is not None:
+                atr_stop = round(highest_spot_since_entry - (ATR_MULTIPLIER * current_atr), 2)
+                old_tsl = trailing_stop_level
+                trailing_stop_level = max(trailing_stop_level, atr_stop)
+                if trailing_stop_level > old_tsl:
+                    log(f"  📈 TSL RAISED: {old_tsl} → {trailing_stop_level} (High={highest_spot_since_entry}, ATR={current_atr})")
+            log(f"  TSL [{candle_time_str}] Spot={latest_close} | TSL={trailing_stop_level} | High={highest_spot_since_entry}")
+            if latest_close < trailing_stop_level:
+                place_exit(f"TSL HIT - Spot {latest_close} < TSL {trailing_stop_level}")
+                return
 
-        elif bias == "BEARISH" and latest_close > candle_high:
-            place_exit(f"SL HIT - Candle Close {latest_close} > Guru High {candle_high}")
-            return
+        elif bias == "BEARISH":
+            highest_spot_since_entry = min(highest_spot_since_entry, latest_close)
+            if current_atr is not None:
+                atr_stop = round(highest_spot_since_entry + (ATR_MULTIPLIER * current_atr), 2)
+                old_tsl = trailing_stop_level
+                trailing_stop_level = min(trailing_stop_level, atr_stop)
+                if trailing_stop_level < old_tsl:
+                    log(f"  📉 TSL LOWERED: {old_tsl} → {trailing_stop_level} (Low={highest_spot_since_entry}, ATR={current_atr})")
+            log(f"  TSL [{candle_time_str}] Spot={latest_close} | TSL={trailing_stop_level} | Low={highest_spot_since_entry}")
+            if latest_close > trailing_stop_level:
+                place_exit(f"TSL HIT - Spot {latest_close} > TSL {trailing_stop_level}")
+                return
 
 
 def main():
@@ -839,6 +898,7 @@ def main():
     log(f"  Strike: {STRIKE_SELECTION} | Lots: {LOTS}")
     log(f"  Candle: {CANDLE_TIME} | Entry: {ENTRY_START}-{ENTRY_END} | Exit: {EXIT_TIME}")
     log(f"  Product: {PRODUCT} | Options Exch: {OPTIONS_EXCHANGE}")
+    log(f"  TSL: ATR({ATR_PERIOD}) × {ATR_MULTIPLIER} | Target: {TARGET_PCT}% | Order: {ORDER_TYPE}")
     log(f"{'='*60}")
     log(f"")
 

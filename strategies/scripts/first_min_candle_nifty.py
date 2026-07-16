@@ -294,11 +294,18 @@ def is_past_time(hour, minute):
 
 
 def get_first_candle():
-    """Capture the 1st 1-minute candle after it closes."""
+    """Capture the 1-min candle at ENTRY_START time after it closes."""
     global first_candle_high, first_candle_low, first_candle_close, first_candle_mid, bias
 
-    log("Waiting for 1st minute candle to close...")
-    wait_for_time(ENTRY_START_H, ENTRY_START_M, "1st candle close")
+    # The candle we want starts at ENTRY_START and closes 1 min later
+    candle_close_h = ENTRY_START_H
+    candle_close_m = ENTRY_START_M + 1
+    if candle_close_m >= 60:
+        candle_close_h += 1
+        candle_close_m -= 60
+
+    log(f"Waiting for 1-min candle to close ({ENTRY_START_H:02d}:{ENTRY_START_M:02d} - {candle_close_h:02d}:{candle_close_m:02d})...")
+    wait_for_time(candle_close_h, candle_close_m, "1st candle close")
 
     # Extra 5 seconds to ensure candle is fully formed
     time.sleep(5)
@@ -340,8 +347,19 @@ def get_first_candle():
                 time.sleep(3)
                 continue
 
-            # First candle
-            candle = today_data.iloc[0]
+            # Find the candle at ENTRY_START time
+            candle = None
+            for idx in today_data.index:
+                if hasattr(idx, 'hour'):
+                    if idx.hour == ENTRY_START_H and idx.minute == ENTRY_START_M:
+                        candle = today_data.loc[idx]
+                        break
+
+            # Fallback: use the last candle if exact match not found
+            if candle is None:
+                candle = today_data.iloc[-1]
+                log(f"  ⚠️ Exact candle at {ENTRY_START} not found, using latest available candle")
+
             first_candle_high = round(float(candle["high"]), 2)
             first_candle_low = round(float(candle["low"]), 2)
             first_candle_close = round(float(candle["close"]), 2)
@@ -657,6 +675,68 @@ def monitor_for_entry():
             return
 
 
+def check_retracement(latest_close, latest_high, latest_low, retraced, candle_time):
+    """Check retracement and re-test conditions for the current candle.
+    
+    Returns:
+        (retraced, confirmed, option_type)
+        - retraced: bool — updated retracement state
+        - confirmed: bool — True if re-test confirmed and entry should be placed
+        - option_type: "CE" or "PE" if confirmed, else None
+    """
+    if bias == "BULLISH":
+        # Check if price has retraced (candle close ≤ HIGH + buffer)
+        if not retraced and latest_close <= first_candle_high + RETRACEMENT_BUFFER:
+            log(f"  📉 Retracement detected [{candle_time}] C={latest_close} ≤ HIGH+buf={first_candle_high + RETRACEMENT_BUFFER}")
+            return True, False, None
+
+        # After retracement, check for re-test: candle touches HIGH-buffer AND closes above HIGH-buffer
+        if retraced and latest_high >= first_candle_high - RETRACEMENT_BUFFER and latest_close > first_candle_high - RETRACEMENT_BUFFER:
+            log(f"  ✅ STEP 2 CONFIRMED [{candle_time}]: Re-test! H={latest_high} touched HIGH-buf={first_candle_high - RETRACEMENT_BUFFER}, C={latest_close} > HIGH-buf")
+            return retraced, True, "CE"
+
+        if retraced:
+            log(f"  Candle [{candle_time}] C={latest_close} | Retraced={retraced} | Waiting for re-test above {first_candle_high - RETRACEMENT_BUFFER}")
+
+    elif bias == "BEARISH":
+        # Check if price has retraced (candle close ≥ LOW - buffer)
+        if not retraced and latest_close >= first_candle_low - RETRACEMENT_BUFFER:
+            log(f"  � Retracement detected [{candle_time}] C={latest_close} ≥ LOW-buf={first_candle_low - RETRACEMENT_BUFFER}")
+            return True, False, None
+
+        # After retracement, check for re-test: candle touches LOW+buffer AND closes below LOW+buffer
+        if retraced and latest_low <= first_candle_low + RETRACEMENT_BUFFER and latest_close < first_candle_low + RETRACEMENT_BUFFER:
+            log(f"  ✅ STEP 2 CONFIRMED [{candle_time}]: Re-test! L={latest_low} touched LOW+buf={first_candle_low + RETRACEMENT_BUFFER}, C={latest_close} < LOW+buf")
+            return retraced, True, "PE"
+
+        if retraced:
+            log(f"  Candle [{candle_time}] C={latest_close} | Retraced={retraced} | Waiting for re-test below {first_candle_low + RETRACEMENT_BUFFER}")
+
+    return retraced, False, None
+
+
+def check_bias_flip(latest_close, candle_time):
+    """Check if opposite side breaks out during retracement wait — flip bias.
+    
+    Returns:
+        (flipped, new_bias) — flipped=True if bias was changed
+    """
+    global bias
+    if bias == "BULLISH" and latest_close < first_candle_low:
+        log(f"  🔄 FLIP! [{candle_time}] Close ({latest_close}) < LOW ({first_candle_low}) — switching to BEARISH")
+        bias = "BEARISH"
+        log(f"STEP 2 (RESET): Now waiting for retracement then candle close < {first_candle_low} to confirm PUT")
+        return True
+
+    elif bias == "BEARISH" and latest_close > first_candle_high:
+        log(f"  🔄 FLIP! [{candle_time}] Close ({latest_close}) > HIGH ({first_candle_high}) — switching to BULLISH")
+        bias = "BULLISH"
+        log(f"STEP 2 (RESET): Now waiting for retracement then candle close > {first_candle_high} to confirm CALL")
+        return True
+
+    return False
+
+
 def monitor_for_retest():
     """Step 2: After breakout, wait for retracement then re-test.
     If opposite side breaks out during wait, flip bias and restart Step 2."""
@@ -667,7 +747,7 @@ def monitor_for_retest():
     else:
         log(f"STEP 2: Waiting for retracement then candle close < {first_candle_low} to confirm PUT")
 
-    retraced = False  # Track if price has pulled back
+    retraced = False
 
     while not entry_done:
         # Check entry window timeout
@@ -689,52 +769,18 @@ def monitor_for_retest():
         latest_high = round(float(latest["high"]), 2)
         latest_low = round(float(latest["low"]), 2)
         latest_close = round(float(latest["close"]), 2)
-
         candle_time = candles.index[-1] if hasattr(candles.index[-1], 'strftime') else "?"
 
-        if bias == "BULLISH":
-            # Check for opposite-side breakout (bearish breakdown while waiting)
-            if latest_close < first_candle_low:
-                log(f"  🔄 FLIP! [{candle_time}] Close ({latest_close}) < LOW ({first_candle_low}) — switching to BEARISH")
-                bias = "BEARISH"
-                retraced = False
-                log(f"STEP 2 (RESET): Now waiting for retracement then candle close < {first_candle_low} to confirm PUT")
-                continue
+        # Check for bias flip (opposite side breakout)
+        if check_bias_flip(latest_close, candle_time):
+            retraced = False
+            continue
 
-            # Check if price has retraced (candle close ≤ HIGH + buffer)
-            if not retraced and latest_close <= first_candle_high + RETRACEMENT_BUFFER:
-                retraced = True
-                log(f"  📉 Retracement detected [{candle_time}] C={latest_close} ≤ HIGH+buf={first_candle_high + RETRACEMENT_BUFFER}")
-
-            # After retracement, check for re-test: candle touches HIGH-buffer AND closes above HIGH-buffer
-            elif retraced and latest_high >= first_candle_high - RETRACEMENT_BUFFER and latest_close > first_candle_high - RETRACEMENT_BUFFER:
-                log(f"  ✅ STEP 2 CONFIRMED [{candle_time}]: Re-test! H={latest_high} touched HIGH-buf={first_candle_high - RETRACEMENT_BUFFER}, C={latest_close} > HIGH-buf")
-                place_entry("CE")
-                return
-            else:
-                log(f"  Candle [{candle_time}] C={latest_close} | Retraced={retraced} | Waiting for re-test above {first_candle_high - RETRACEMENT_BUFFER}")
-
-        elif bias == "BEARISH":
-            # Check for opposite-side breakout (bullish breakout while waiting)
-            if latest_close > first_candle_high:
-                log(f"  🔄 FLIP! [{candle_time}] Close ({latest_close}) > HIGH ({first_candle_high}) — switching to BULLISH")
-                bias = "BULLISH"
-                retraced = False
-                log(f"STEP 2 (RESET): Now waiting for retracement then candle close > {first_candle_high} to confirm CALL")
-                continue
-
-            # Check if price has retraced (candle close ≥ LOW - buffer)
-            if not retraced and latest_close >= first_candle_low - RETRACEMENT_BUFFER:
-                retraced = True
-                log(f"  📈 Retracement detected [{candle_time}] C={latest_close} ≥ LOW-buf={first_candle_low - RETRACEMENT_BUFFER}")
-
-            # After retracement, check for re-test: candle touches LOW+buffer AND closes below LOW+buffer
-            elif retraced and latest_low <= first_candle_low + RETRACEMENT_BUFFER and latest_close < first_candle_low + RETRACEMENT_BUFFER:
-                log(f"  ✅ STEP 2 CONFIRMED [{candle_time}]: Re-test! L={latest_low} touched LOW+buf={first_candle_low + RETRACEMENT_BUFFER}, C={latest_close} < LOW+buf")
-                place_entry("PE")
-                return
-            else:
-                log(f"  Candle [{candle_time}] C={latest_close} | Retraced={retraced} | Waiting for re-test below {first_candle_low}")
+        # Check retracement and re-test
+        retraced, confirmed, option_type = check_retracement(latest_close, latest_high, latest_low, retraced, candle_time)
+        if confirmed:
+            place_entry(option_type)
+            return
 
 
 def compute_atr():
@@ -910,8 +956,8 @@ def main():
     log(f"{'='*60}")
     log(f"")
 
-    # Step 1: Wait for market open
-    wait_for_time(9, 15, "market open")
+    # Step 1: Wait for strategy start time
+    wait_for_time(ENTRY_START_H, ENTRY_START_M, "strategy start")
 
     # Step 2: Capture 1st candle
     if not get_first_candle():
