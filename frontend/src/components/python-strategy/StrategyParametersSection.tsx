@@ -27,7 +27,7 @@ const STRIKE_OPTIONS = [
 
 const PRODUCT_OPTIONS = ['MIS', 'NRML']
 
-const EXCHANGE_OPTIONS = ['NFO', 'BFO', 'MCX', 'CDS']
+const EXCHANGE_OPTIONS = ['NSE', 'NSE_INDEX', 'NFO', 'BFO', 'BSE', 'MCX', 'CDS']
 
 interface StrategyParametersSectionProps {
   values: StrategyEnvVars
@@ -223,6 +223,49 @@ export default function StrategyParametersSection({
             <p className="text-sm text-red-500">{errors.STRATEGY_EXCHANGE}</p>
           )}
         </div>
+      </div>
+
+      {/* Target Profit % */}
+      <div className="space-y-2">
+        <Label htmlFor="strategy-target-pct">Target Profit %</Label>
+        <Input
+          id="strategy-target-pct"
+          type="number"
+          min={0}
+          step={1}
+          placeholder="0 (disabled)"
+          value={values.STRATEGY_TARGET_PCT}
+          onChange={(e) => handleChange('STRATEGY_TARGET_PCT', e.target.value)}
+          disabled={disabled}
+          className={errors.STRATEGY_TARGET_PCT ? 'border-red-500' : ''}
+        />
+        <p className="text-xs text-muted-foreground">
+          Exit when option profit reaches this %. Set to 0 to disable.
+        </p>
+        {errors.STRATEGY_TARGET_PCT && (
+          <p className="text-sm text-red-500">{errors.STRATEGY_TARGET_PCT}</p>
+        )}
+      </div>
+
+      {/* Order Type */}
+      <div className="space-y-2">
+        <Label htmlFor="strategy-order-type">Order Type</Label>
+        <Select
+          value={values.STRATEGY_ORDER_TYPE}
+          onValueChange={(value) => handleChange('STRATEGY_ORDER_TYPE', value)}
+          disabled={disabled}
+        >
+          <SelectTrigger id="strategy-order-type">
+            <SelectValue placeholder="Select order type" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="MARKET">MARKET</SelectItem>
+            <SelectItem value="LIMIT">LIMIT</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          MARKET for index options, LIMIT for stock options (Zerodha blocks MARKET for stocks).
+        </p>
       </div>
     </div>
   )

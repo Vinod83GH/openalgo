@@ -27,7 +27,6 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { useAuthStore } from '@/stores/authStore'
 import type { PaperTrade, TradeSummary } from '@/types/paper-journal'
 import { showToast } from '@/utils/toast'
 
@@ -56,7 +55,6 @@ function formatTime(isoString: string | null): string {
 }
 
 export default function PaperJournal() {
-  const { apiKey } = useAuthStore()
 
   const [trades, setTrades] = useState<PaperTrade[]>([])
   const [summary, setSummary] = useState<TradeSummary | null>(null)
@@ -68,9 +66,8 @@ export default function PaperJournal() {
   const [error, setError] = useState<string | null>(null)
 
   const fetchStrategies = async () => {
-    if (!apiKey) return
     try {
-      const data = await paperJournalApi.getStrategies(apiKey)
+      const data = await paperJournalApi.getStrategies()
       setStrategies(data)
     } catch {
       // Silent fallback — dropdown shows only "All Strategies"
@@ -78,7 +75,6 @@ export default function PaperJournal() {
   }
 
   const fetchData = async (start: string, end: string, strategy?: string) => {
-    if (!apiKey) return
     setIsLoading(true)
     setError(null)
     try {
@@ -88,8 +84,8 @@ export default function PaperJournal() {
         strategy_name: strategy && strategy !== 'all' ? strategy : undefined,
       }
       const [tradesData, summaryData] = await Promise.all([
-        paperJournalApi.getTrades(apiKey, params),
-        paperJournalApi.getSummary(apiKey, params),
+        paperJournalApi.getTrades(params),
+        paperJournalApi.getSummary(params),
       ])
       setTrades(tradesData)
       setSummary(summaryData)

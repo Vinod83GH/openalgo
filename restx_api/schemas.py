@@ -46,6 +46,9 @@ class OrderSchema(Schema):
     underlying_ltp = fields.Float(
         missing=None, allow_none=True
     )  # Optional: passed from options order for execution reference
+    market_protection = fields.Float(
+        missing=None, allow_none=True, load_default=None
+    )  # Optional: market protection percentage for MARKET orders (broker-specific)
 
     @post_load
     def coerce_quantity(self, data, **kwargs):
@@ -78,6 +81,9 @@ class SmartOrderSchema(Schema):
         missing=0,
         validate=validate.Range(min=0, error="Disclosed quantity must be a non-negative integer."),
     )
+    market_protection = fields.Float(
+        missing=None, allow_none=True, load_default=None
+    )  # Optional: market protection percentage for MARKET orders (broker-specific)
 
     @post_load
     def coerce_quantity(self, data, **kwargs):

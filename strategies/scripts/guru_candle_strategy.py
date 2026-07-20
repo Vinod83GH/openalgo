@@ -1,25 +1,25 @@
 #!/usr/bin/env python
 """
-First 1-Minute Candle Strategy - Index Options (NIFTY/BANKNIFTY)
-================================================================
+Guru Candle Strategy - Stock Options
+=====================================
 Strategy Logic:
-1. Wait for 1st 1-min candle to close (9:15-9:16)
+1. Wait for 11:39 AM 1-min candle to close (11:39-11:40)
 2. Mark its High and Low
 3. Determine bias:
    - Close ABOVE midpoint (bullish) → wait for retracement to High → BUY CALL
    - Close BELOW midpoint (bearish) → wait for retracement to Low → BUY PUT
-4. Stop-loss: opposite side of 1st candle
+4. Stop-loss: opposite side of the candle
 5. Auto-exit at configured exit time
 
 Configuration (via Environment Variables on Python Strategy page):
-  STRATEGY_SYMBOL     = NIFTY | BANKNIFTY          (default: NIFTY)
-  STRATEGY_STRIKE     = ITM3|ITM2|ITM1|ATM|OTM1|OTM2|OTM3  (default: ITM2)
+  STRATEGY_SYMBOL     = Stock symbol (e.g., RELIANCE, TCS, HDFCBANK)  (REQUIRED)
+  STRATEGY_EXCHANGE   = NSE | BSE                   (REQUIRED - spot exchange)
+  STRATEGY_STRIKE     = ITM3|ITM2|ITM1|ATM|OTM1|OTM2|OTM3  (default: ATM)
   STRATEGY_LOTS       = Number of lots              (default: 1)
-  STRATEGY_ENTRY_START = HH:MM entry window start  (default: 09:16)
-  STRATEGY_ENTRY_END  = HH:MM entry window end     (default: 10:30)
+  STRATEGY_ENTRY_START = HH:MM entry window start  (default: 11:40)
+  STRATEGY_ENTRY_END  = HH:MM entry window end     (default: 14:30)
   STRATEGY_EXIT_TIME  = HH:MM force exit time      (default: 15:15)
   STRATEGY_PRODUCT    = MIS | NRML                  (default: MIS)
-  STRATEGY_EXCHANGE   = NFO | BFO                   (default: NFO)
 """
 
 import os
@@ -28,7 +28,6 @@ import requests
 from datetime import datetime, timedelta
 
 from openalgo import api
-
 
 # ============================================================
 # PAPER JOURNAL CLIENT
@@ -40,10 +39,10 @@ class PaperJournalClient:
     def __init__(self, api_key: str, host: str):
         self.api_key = api_key
         self.host = host.rstrip("/")
-        self._active = None  # Cached mode status
+        self._active = None
 
     def is_active(self) -> bool:
-        """Check if app is in Analyzer mode by querying the journal status endpoint."""
+        """Check if app is in Analyzer mode."""
         try:
             resp = requests.get(
                 f"{self.host}/api/v1/paperjournal/status",
@@ -61,7 +60,7 @@ class PaperJournalClient:
         return self._active
 
     def open_trade(self, **kwargs) -> int | None:
-        """Open a new trade record. Returns trade_id or None on failure."""
+        """Open a new trade record. Returns trade_id or None."""
         try:
             # Filter out None values to avoid JSON serialization issues
             filtered_kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -93,6 +92,7 @@ class PaperJournalClient:
         except Exception:
             return False
 
+
 # ============================================================
 # CONFIGURATION — Read from environment variables
 # ============================================================
@@ -104,30 +104,75 @@ if not API_KEY:
 
 HOST = os.getenv("OPENALGO_HOST", "http://127.0.0.1:5000")
 
-# Strategy parameters (configurable from Python Strategy page env vars)
-SYMBOL = os.getenv("STRATEGY_SYMBOL", "NIFTY")
-STRIKE_SELECTION = os.getenv("STRATEGY_STRIKE", "ITM2")
+# Strategy parameters (from Python Strategy page env vars)
+SYMBOL = os.getenv("STRATEGY_SYMBOL", "")
+if not SYMBOL:
+    print("Error: STRATEGY_SYMBOL environment variable not set. Configure it on the Strategy page.")
+    exit(1)
+
+EXCHANGE = os.getenv("STRATEGY_EXCHANGE", "")
+if not EXCHANGE:
+    print("Error: STRATEGY_EXCHANGE environment variable not set. Configure it on the Strategy page.")
+    exit(1)
+
+STRIKE_SELECTION = os.getenv("STRATEGY_STRIKE", "ATM")
 LOTS = int(os.getenv("STRATEGY_LOTS", "1"))
-ENTRY_START = os.getenv("STRATEGY_ENTRY_START", "09:16")
-ENTRY_END = os.getenv("STRATEGY_ENTRY_END", "10:30")
+ENTRY_START = os.getenv("STRATEGY_ENTRY_START", "11:40")
+ENTRY_END = os.getenv("STRATEGY_ENTRY_END", "14:30")
 EXIT_TIME = os.getenv("STRATEGY_EXIT_TIME", "15:15")
 PRODUCT = os.getenv("STRATEGY_PRODUCT", "MIS")
-EXCHANGE = os.getenv("STRATEGY_EXCHANGE", "NFO")
 TARGET_PCT = float(os.getenv("STRATEGY_TARGET_PCT", "0"))  # Profit target %. 0 = disabled. E.g., 15 = exit at 15% profit
-ORDER_TYPE = os.getenv("STRATEGY_ORDER_TYPE", "MARKET")  # MARKET or LIMIT
+ORDER_TYPE = os.getenv("STRATEGY_ORDER_TYPE", "LIMIT")  # MARKET or LIMIT (default LIMIT for stock options)
+
+# The candle to monitor (11:39 AM)
+CANDLE_TIME = "11:39"
+# CANDLE_TIME = "10:20"
 
 # Derived
-STRATEGY_NAME = f"FirstMinCandle-{SYMBOL}"
-SPOT_EXCHANGE = os.getenv("STRATEGY_EXCHANGE", "NSE_INDEX")  # Spot exchange from page env (default NSE_INDEX for indices)
+STRATEGY_NAME = f"GuruCandle-{SYMBOL}"
+# For stock options, the options exchange is NFO
+OPTIONS_EXCHANGE = "NFO"
 
-# Lot sizes (will be fetched from API, these are fallbacks)
-LOT_SIZES = {"NIFTY": 65, "BANKNIFTY": 30}
+# Fallback lot sizes for common stock options (will use API resolution first)
+STOCK_LOT_SIZES = {
+    "RELIANCE": 500,
+    "TCS": 175,
+    "HDFCBANK": 550,
+    "INFY": 300,
+    "ICICIBANK": 700,
+    "SBIN": 750,
+    "BHARTIARTL": 475,
+    "ITC": 1600,
+    "KOTAKBANK": 400,
+    "LT": 375,
+    "AXISBANK": 625,
+    "HINDUNILVR": 300,
+    "BAJFINANCE": 125,
+    "MARUTI": 100,
+    "TATAMOTORS": 575,
+    "SUNPHARMA": 350,
+    "TITAN": 225,
+    "TATASTEEL": 1100,
+    "WIPRO": 1500,
+    "ADANIENT": 250,
+    "POWERGRID": 2700,
+    "NTPC": 2700,
+    "ONGC": 3850,
+    "COALINDIA": 2100,
+    "JSWSTEEL": 675,
+    "M&M": 350,
+    "HINDALCO": 1075,
+    "ULTRACEMCO": 100,
+    "DRREDDY": 125,
+    "TECHM": 600,
+}
 
 # Parse time configs
 def parse_time(time_str):
     parts = time_str.split(":")
     return int(parts[0]), int(parts[1])
 
+CANDLE_H, CANDLE_M = parse_time(CANDLE_TIME)
 ENTRY_START_H, ENTRY_START_M = parse_time(ENTRY_START)
 ENTRY_END_H, ENTRY_END_M = parse_time(ENTRY_END)
 EXIT_H, EXIT_M = parse_time(EXIT_TIME)
@@ -142,10 +187,10 @@ journal = PaperJournalClient(api_key=API_KEY, host=HOST)
 # STATE
 # ============================================================
 
-first_candle_high = None
-first_candle_low = None
-first_candle_close = None
-first_candle_mid = None
+candle_high = None
+candle_low = None
+candle_close = None
+candle_mid = None
 bias = None
 entry_done = False
 exit_done = False
@@ -178,7 +223,6 @@ def get_nearest_expiry():
         expiry_weekday = 1  # Tuesday = 1
         days_until = (expiry_weekday - today.weekday()) % 7
         if days_until == 0:
-            # Today is Tuesday (expiry day) — skip to next week
             days_until = 7
         expiry = today + timedelta(days=days_until)
 
@@ -187,26 +231,21 @@ def get_nearest_expiry():
         expiry_weekday = 3  # Thursday = 3
         days_until = (expiry_weekday - today.weekday()) % 7
         if days_until == 0:
-            # Today is Thursday (expiry day) — skip to next week
             days_until = 7
         expiry = today + timedelta(days=days_until)
 
     else:
         # BANKNIFTY and all STOCKS: Monthly last Tuesday expiry
-        # Find last Tuesday of current month
         import calendar
         year, month = today.year, today.month
 
-        # Get last day of month
         last_day = calendar.monthrange(year, month)[1]
         last_date = today.replace(day=last_day)
 
-        # Find last Tuesday
         while last_date.weekday() != 1:  # Tuesday = 1
             last_date -= timedelta(days=1)
 
         if today >= last_date:
-            # Already past this month's expiry — go to next month
             if month == 12:
                 year += 1
                 month = 1
@@ -232,7 +271,7 @@ def resolve_option_symbol(option_type, spot_ltp):
     payload = {
         "apikey": API_KEY,
         "underlying": SYMBOL,
-        "exchange": SPOT_EXCHANGE,
+        "exchange": EXCHANGE,
         "expiry_date": expiry_date,
         "offset": STRIKE_SELECTION,
         "option_type": option_type,
@@ -246,8 +285,8 @@ def resolve_option_symbol(option_type, spot_ltp):
 
         if data.get("status") == "success":
             sym = data.get("symbol")
-            exch = data.get("exchange", EXCHANGE)
-            lotsize = data.get("lotsize", LOT_SIZES.get(SYMBOL, 75))
+            exch = data.get("exchange", OPTIONS_EXCHANGE)
+            lotsize = data.get("lotsize", STOCK_LOT_SIZES.get(SYMBOL, 100))
             log(f"  ✅ Resolved: {sym} on {exch} (lot={lotsize})")
             return sym, exch, int(lotsize)
         else:
@@ -277,12 +316,13 @@ def is_past_time(hour, minute):
     return now.hour > hour or (now.hour == hour and now.minute >= minute)
 
 
-def get_first_candle():
-    """Capture the 1st 1-minute candle after it closes."""
-    global first_candle_high, first_candle_low, first_candle_close, first_candle_mid, bias
+def get_guru_candle():
+    """Capture the 11:39 AM 1-minute candle after it closes."""
+    global candle_high, candle_low, candle_close, candle_mid, bias
 
-    log("Waiting for 1st minute candle to close...")
-    wait_for_time(ENTRY_START_H, ENTRY_START_M, "1st candle close")
+    log(f"Waiting for Guru Candle ({CANDLE_TIME}) to close...")
+    # Wait until 11:40 (candle close time = candle_time + 1 min)
+    wait_for_time(CANDLE_H, CANDLE_M + 1, "Guru candle close")
 
     # Extra 5 seconds to ensure candle is fully formed
     time.sleep(5)
@@ -295,7 +335,7 @@ def get_first_candle():
         try:
             df = client.history(
                 symbol=SYMBOL,
-                exchange=SPOT_EXCHANGE,
+                exchange=EXCHANGE,
                 interval="1m",
                 start_date=start_date,
                 end_date=end_date,
@@ -324,21 +364,34 @@ def get_first_candle():
                 time.sleep(3)
                 continue
 
-            # First candle
-            candle = today_data.iloc[0]
-            first_candle_high = round(float(candle["high"]), 2)
-            first_candle_low = round(float(candle["low"]), 2)
-            first_candle_close = round(float(candle["close"]), 2)
-            first_candle_mid = round((first_candle_high + first_candle_low) / 2, 2)
+            # Find the 11:39 candle
+            target_candle = None
+            for idx, row in today_data.iterrows():
+                candle_time = idx
+                if hasattr(candle_time, 'hour'):
+                    if candle_time.hour == CANDLE_H and candle_time.minute == CANDLE_M:
+                        target_candle = row
+                        break
+
+            if target_candle is None:
+                log(f"  Candle at {CANDLE_TIME} not found, retry {attempt + 1}/5...")
+                time.sleep(3)
+                continue
+
+            candle_high = round(float(target_candle["high"]), 2)
+            candle_low = round(float(target_candle["low"]), 2)
+            candle_close = round(float(target_candle["close"]), 2)
+            candle_mid = round((candle_high + candle_low) / 2, 2)
 
             log(f"")
             log(f"{'='*50}")
-            log(f"  1st CANDLE: H={first_candle_high} L={first_candle_low} C={first_candle_close}")
-            log(f"  Midpoint: {first_candle_mid}")
+            log(f"  GURU CANDLE ({CANDLE_TIME}): H={candle_high} L={candle_low} C={candle_close}")
+            log(f"  Midpoint: {candle_mid}")
+            log(f"  Symbol: {SYMBOL} | Exchange: {EXCHANGE}")
             log(f"{'='*50}")
             log(f"  Waiting for breakout:")
-            log(f"    CALL entry: any candle close > {first_candle_high}")
-            log(f"    PUT entry:  any candle close < {first_candle_low}")
+            log(f"    CALL entry: any candle close > {candle_high}")
+            log(f"    PUT entry:  any candle close < {candle_low}")
             log(f"    SL (after entry): close crosses opposite side")
             log(f"")
             return True
@@ -347,16 +400,15 @@ def get_first_candle():
             log(f"  Error: {e}, retry {attempt + 1}/5...")
             time.sleep(3)
 
-    log("Failed to capture 1st candle. Aborting.")
+    log("Failed to capture Guru Candle. Aborting.")
     return False
 
 
 def get_spot_ltp():
     """Get current spot LTP."""
     try:
-        quotes = client.quotes(symbol=SYMBOL, exchange=SPOT_EXCHANGE)
+        quotes = client.quotes(symbol=SYMBOL, exchange=EXCHANGE)
         if quotes and isinstance(quotes, dict):
-            # Handle both flat {"ltp": ...} and wrapped {"data": {"ltp": ...}} formats
             if "ltp" in quotes:
                 return float(quotes["ltp"])
             elif "data" in quotes and isinstance(quotes["data"], dict) and "ltp" in quotes["data"]:
@@ -385,7 +437,6 @@ def place_entry(option_type):
     global entry_done, option_symbol, option_exchange, actual_quantity, journal_trade_id
 
     spot_ltp = get_spot_ltp()
-    # spot_ltp is optional — used for logging only, don't block entry if quotes fail
 
     # Resolve option symbol via API
     sym, exch, lotsize = resolve_option_symbol(option_type, spot_ltp)
@@ -397,8 +448,15 @@ def place_entry(option_type):
     option_exchange = exch
     actual_quantity = LOTS * lotsize
 
-    # Fetch option premium (for journal logging and LIMIT orders)
-    option_ltp = get_option_ltp(option_symbol, option_exchange)
+    # Fetch option premium (retry up to 3 times)
+    option_ltp = None
+    for retry in range(3):
+        option_ltp = get_option_ltp(option_symbol, option_exchange)
+        if option_ltp is not None:
+            break
+        log(f"  Option LTP fetch attempt {retry + 1}/3 failed, retrying...")
+        time.sleep(2)
+
     if option_ltp:
         log(f"  Option Premium: ₹{option_ltp}")
 
@@ -410,9 +468,10 @@ def place_entry(option_type):
         price_type = "LIMIT"
         price = option_ltp
     else:
-        log(f"  ⚠️ LIMIT requested but no LTP available, falling back to MARKET")
-        price_type = "MARKET"
-        price = 0
+        # For stock options, MARKET orders are blocked by Zerodha — must skip if no LTP
+        log(f"  ❌ Could not fetch option LTP for {option_symbol} after 3 attempts.")
+        log(f"  ❌ Cannot place LIMIT order without price. Skipping entry.")
+        return False
 
     log(f"")
     log(f"🚀 ENTRY: BUY {option_symbol} | Qty={actual_quantity} ({LOTS} lots × {lotsize}) | {price_type} @ {price if price else 'MKT'}")
@@ -430,9 +489,6 @@ def place_entry(option_type):
         }
         if price_type == "LIMIT":
             order_params["price"] = price
-
-        if price_type == "MARKET":
-            order_params["market_protection"] = -1
 
         response = client.placesmartorder(**order_params)
         log(f"  Order Response: {response}")
@@ -459,19 +515,20 @@ def place_entry(option_type):
                     entry_quantity=actual_quantity,
                     entry_action="BUY",
                     custom_metadata={
-                        "first_candle_high": first_candle_high,
-                        "first_candle_low": first_candle_low,
-                        "first_candle_close": first_candle_close,
-                        "first_candle_mid": first_candle_mid,
+                        "candle_time": CANDLE_TIME,
+                        "candle_high": candle_high,
+                        "candle_low": candle_low,
+                        "candle_close": candle_close,
+                        "candle_mid": candle_mid,
                         "bias": bias,
+                        "underlying": SYMBOL,
+                        "exchange": EXCHANGE,
                         "entry_price_type": price_type,
                     },
                 )
                 if trade_id:
                     journal_trade_id = trade_id
                     log(f"  📓 Journal: Trade opened (ID={trade_id})")
-                else:
-                    log(f"  📓 Journal: open_trade returned no ID")
         except Exception as e:
             log(f"  📓 Journal: Error logging entry - {e}")
 
@@ -487,8 +544,13 @@ def place_exit(reason=""):
     if not entry_done or not option_symbol or exit_done:
         return
 
-    # Fetch current option premium (for journal logging)
-    option_ltp = get_option_ltp(option_symbol, option_exchange)
+    # Fetch current option premium (retry up to 3 times)
+    option_ltp = None
+    for retry in range(3):
+        option_ltp = get_option_ltp(option_symbol, option_exchange)
+        if option_ltp is not None:
+            break
+        time.sleep(2)
 
     # Determine order type from config
     if ORDER_TYPE == "MARKET":
@@ -498,9 +560,10 @@ def place_exit(reason=""):
         price_type = "LIMIT"
         price = option_ltp
     else:
-        log(f"  ⚠️ LIMIT requested but no LTP available for exit, falling back to MARKET")
-        price_type = "MARKET"
-        price = 0
+        # Fallback: use minimum tick as safety LIMIT for stock options
+        log(f"  ⚠️ Could not fetch exit LTP, using LIMIT @ 0.05 as safety")
+        price_type = "LIMIT"
+        price = 0.05
 
     log(f"")
     log(f"🛑 EXIT ({reason}): SELL {option_symbol} | Qty={actual_quantity} | {price_type} @ {price if price else 'MKT'}")
@@ -518,9 +581,6 @@ def place_exit(reason=""):
         }
         if price_type == "LIMIT":
             order_params["price"] = price
-        
-        if price_type == "MARKET":
-            order_params["market_protection"] = -1
 
         response = client.placesmartorder(**order_params)
         log(f"  Exit Response: {response}")
@@ -531,7 +591,6 @@ def place_exit(reason=""):
             return False
 
         exit_done = True
-
     except Exception as e:
         log(f"  Exit Error: {e}")
 
@@ -548,21 +607,19 @@ def place_exit(reason=""):
             )
             if success:
                 log(f"  📓 Journal: Trade closed (ID={journal_trade_id}) | Exit Premium: ₹{option_ltp}")
-            else:
-                log(f"  📓 Journal: close_trade failed")
     except Exception as e:
         log(f"  📓 Journal: Error logging exit - {e}")
 
 
 def get_latest_candles():
-    """Fetch today's 1-min candles and return the latest closed one."""
+    """Fetch today's 1-min candles and return them."""
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = end_date
 
     try:
         df = client.history(
             symbol=SYMBOL,
-            exchange=SPOT_EXCHANGE,
+            exchange=EXCHANGE,
             interval="1m",
             start_date=start_date,
             end_date=end_date,
@@ -596,8 +653,8 @@ def monitor_for_entry():
     global bias
 
     log(f"STEP 1: Monitoring for breakout via 1-min candle close (until {ENTRY_END})...")
-    log(f"  BULLISH breakout: candle close > {first_candle_high} (1st candle HIGH)")
-    log(f"  BEARISH breakout: candle close < {first_candle_low} (1st candle LOW)")
+    log(f"  BULLISH breakout: candle close > {candle_high} (Guru candle HIGH)")
+    log(f"  BEARISH breakout: candle close < {candle_low} (Guru candle LOW)")
 
     while True:
         # Check entry window timeout
@@ -605,7 +662,7 @@ def monitor_for_entry():
             log(f"⏰ Entry window closed ({ENTRY_END}). No breakout occurred.")
             return
 
-        # Wait for the current minute to close (sleep until next minute + 5s buffer)
+        # Wait for the current minute to close
         now = datetime.now()
         seconds_to_next_min = 60 - now.second + 5
         log(f"  Waiting {seconds_to_next_min}s for next candle close...")
@@ -617,25 +674,24 @@ def monitor_for_entry():
             log(f"  No candle data available, retrying...")
             continue
 
-        # Get the last closed candle (most recent row)
         latest = candles.iloc[-1]
         latest_close = round(float(latest["close"]), 2)
 
         candle_time = candles.index[-1] if hasattr(candles.index[-1], 'strftime') else "?"
         log(f"  Candle [{candle_time}] C={latest_close}")
 
-        # Check BULLISH breakout: close > 1st candle HIGH
-        if latest_close > first_candle_high:
+        # Check BULLISH breakout
+        if latest_close > candle_high:
             bias = "BULLISH"
-            log(f"  ✅ STEP 1 CONFIRMED: BULLISH BREAKOUT! Close ({latest_close}) > HIGH ({first_candle_high})")
+            log(f"  ✅ STEP 1 CONFIRMED: BULLISH BREAKOUT! Close ({latest_close}) > HIGH ({candle_high})")
             log(f"  Now waiting for retracement + re-test...")
             monitor_for_retest()
             return
 
-        # Check BEARISH breakout: close < 1st candle LOW
-        elif latest_close < first_candle_low:
+        # Check BEARISH breakout
+        elif latest_close < candle_low:
             bias = "BEARISH"
-            log(f"  ✅ STEP 1 CONFIRMED: BEARISH BREAKOUT! Close ({latest_close}) < LOW ({first_candle_low})")
+            log(f"  ✅ STEP 1 CONFIRMED: BEARISH BREAKOUT! Close ({latest_close}) < LOW ({candle_low})")
             log(f"  Now waiting for retracement + re-test...")
             monitor_for_retest()
             return
@@ -647,11 +703,11 @@ def monitor_for_retest():
     global entry_done, bias
 
     if bias == "BULLISH":
-        log(f"STEP 2: Waiting for retracement then candle close > {first_candle_high} to confirm CALL")
+        log(f"STEP 2: Waiting for retracement then candle close > {candle_high} to confirm CALL")
     else:
-        log(f"STEP 2: Waiting for retracement then candle close < {first_candle_low} to confirm PUT")
+        log(f"STEP 2: Waiting for retracement then candle close < {candle_low} to confirm PUT")
 
-    retraced = False  # Track if price has pulled back
+    retraced = False
 
     while not entry_done:
         # Check entry window timeout
@@ -678,47 +734,41 @@ def monitor_for_retest():
 
         if bias == "BULLISH":
             # Check for opposite-side breakout (bearish breakdown while waiting)
-            if latest_close < first_candle_low:
-                log(f"  🔄 FLIP! [{candle_time}] Close ({latest_close}) < LOW ({first_candle_low}) — switching to BEARISH")
+            if latest_close < candle_low:
+                log(f"  🔄 FLIP! [{candle_time}] Close ({latest_close}) < LOW ({candle_low}) — switching to BEARISH")
                 bias = "BEARISH"
                 retraced = False
-                log(f"STEP 2 (RESET): Now waiting for retracement then candle close < {first_candle_low} to confirm PUT")
+                log(f"STEP 2 (RESET): Now waiting for retracement then candle close < {candle_low} to confirm PUT")
                 continue
 
-            # Check if price has retraced (candle close ≤ HIGH)
-            if not retraced and latest_close <= first_candle_high:
+            if not retraced and latest_close <= candle_high:
                 retraced = True
-                log(f"  📉 Retracement detected [{candle_time}] C={latest_close} ≤ HIGH={first_candle_high}")
-
-            # After retracement, check for re-test: candle touches HIGH AND closes above it
-            elif retraced and latest_high >= first_candle_high and latest_close > first_candle_high:
-                log(f"  ✅ STEP 2 CONFIRMED [{candle_time}]: Re-test! H={latest_high} touched HIGH, C={latest_close} > HIGH={first_candle_high}")
+                log(f"  📉 Retracement detected [{candle_time}] C={latest_close} ≤ HIGH={candle_high}")
+            elif retraced and latest_high >= candle_high and latest_close > candle_high:
+                log(f"  ✅ STEP 2 CONFIRMED [{candle_time}]: Re-test! H={latest_high} touched HIGH, C={latest_close} > HIGH={candle_high}")
                 place_entry("CE")
                 return
             else:
-                log(f"  Candle [{candle_time}] C={latest_close} | Retraced={retraced} | Waiting for re-test above {first_candle_high}")
+                log(f"  Candle [{candle_time}] C={latest_close} | Retraced={retraced} | Waiting for re-test above {candle_high}")
 
         elif bias == "BEARISH":
             # Check for opposite-side breakout (bullish breakout while waiting)
-            if latest_close > first_candle_high:
-                log(f"  🔄 FLIP! [{candle_time}] Close ({latest_close}) > HIGH ({first_candle_high}) — switching to BULLISH")
+            if latest_close > candle_high:
+                log(f"  🔄 FLIP! [{candle_time}] Close ({latest_close}) > HIGH ({candle_high}) — switching to BULLISH")
                 bias = "BULLISH"
                 retraced = False
-                log(f"STEP 2 (RESET): Now waiting for retracement then candle close > {first_candle_high} to confirm CALL")
+                log(f"STEP 2 (RESET): Now waiting for retracement then candle close > {candle_high} to confirm CALL")
                 continue
 
-            # Check if price has retraced (candle close ≥ LOW)
-            if not retraced and latest_close >= first_candle_low:
+            if not retraced and latest_close >= candle_low:
                 retraced = True
-                log(f"  📈 Retracement detected [{candle_time}] C={latest_close} ≥ LOW={first_candle_low}")
-
-            # After retracement, check for re-test: candle touches LOW AND closes below it
-            elif retraced and latest_low <= first_candle_low and latest_close < first_candle_low:
-                log(f"  ✅ STEP 2 CONFIRMED [{candle_time}]: Re-test! L={latest_low} touched LOW, C={latest_close} < LOW={first_candle_low}")
+                log(f"  📈 Retracement detected [{candle_time}] C={latest_close} ≥ LOW={candle_low}")
+            elif retraced and latest_low <= candle_low and latest_close < candle_low:
+                log(f"  ✅ STEP 2 CONFIRMED [{candle_time}]: Re-test! L={latest_low} touched LOW, C={latest_close} < LOW={candle_low}")
                 place_entry("PE")
                 return
             else:
-                log(f"  Candle [{candle_time}] C={latest_close} | Retraced={retraced} | Waiting for re-test below {first_candle_low}")
+                log(f"  Candle [{candle_time}] C={latest_close} | Retraced={retraced} | Waiting for re-test below {candle_low}")
 
 
 def monitor_stop_loss():
@@ -771,12 +821,12 @@ def monitor_stop_loss():
         candle_time = candles.index[-1] if hasattr(candles.index[-1], 'strftime') else "?"
         log(f"  SL Check [{candle_time}] H={latest_high} L={latest_low} C={latest_close}")
 
-        if bias == "BULLISH" and latest_close < first_candle_low:
-            place_exit(f"SL HIT - Candle Close {latest_close} < 1st Candle Low {first_candle_low}")
+        if bias == "BULLISH" and latest_close < candle_low:
+            place_exit(f"SL HIT - Candle Close {latest_close} < Guru Low {candle_low}")
             return
 
-        elif bias == "BEARISH" and latest_close > first_candle_high:
-            place_exit(f"SL HIT - Candle Close {latest_close} > 1st Candle High {first_candle_high}")
+        elif bias == "BEARISH" and latest_close > candle_high:
+            place_exit(f"SL HIT - Candle Close {latest_close} > Guru High {candle_high}")
             return
 
 
@@ -784,18 +834,19 @@ def main():
     """Main strategy execution."""
     log(f"")
     log(f"{'='*60}")
-    log(f"  FIRST 1-MIN CANDLE STRATEGY")
-    log(f"  Symbol: {SYMBOL} | Strike: {STRIKE_SELECTION} | Lots: {LOTS}")
-    log(f"  Entry: {ENTRY_START}-{ENTRY_END} | Exit: {EXIT_TIME}")
-    log(f"  Product: {PRODUCT} | Exchange: {EXCHANGE}")
+    log(f"  GURU CANDLE STRATEGY (Stock Options)")
+    log(f"  Symbol: {SYMBOL} | Exchange: {EXCHANGE}")
+    log(f"  Strike: {STRIKE_SELECTION} | Lots: {LOTS}")
+    log(f"  Candle: {CANDLE_TIME} | Entry: {ENTRY_START}-{ENTRY_END} | Exit: {EXIT_TIME}")
+    log(f"  Product: {PRODUCT} | Options Exch: {OPTIONS_EXCHANGE}")
     log(f"{'='*60}")
     log(f"")
 
-    # Step 1: Wait for market open
+    # Step 1: Wait for market to be open enough
     wait_for_time(9, 15, "market open")
 
-    # Step 2: Capture 1st candle
-    if not get_first_candle():
+    # Step 2: Capture the Guru Candle (11:39 AM)
+    if not get_guru_candle():
         return
 
     # Step 3: Monitor for entry
