@@ -131,6 +131,7 @@ RETRACEMENT_BUFFER = float(os.getenv("STRATEGY_RETRACEMENT_BUFFER", "2"))  # Poi
 ATR_PERIOD = int(os.getenv("STRATEGY_ATR_PERIOD", "7"))  # ATR lookback period (default: 7 candles)
 TSL_ACTIVATION_PCT = float(os.getenv("STRATEGY_TSL_ACTIVATION_PCT", "5"))  # Profit % to activate ATR TSL (default: 5%). Until then, use candle-based SL.
 MAX_CANDLE_RANGE = float(os.getenv("STRATEGY_MAX_CANDLE_RANGE", "80"))  # Max 1st candle range (H-L) in points. If exceeded, no trade today. 0 = disabled.
+MAX_LOSS_PCT = float(os.getenv("STRATEGY_MAX_LOSS_PCT", "20"))  # Max loss % on option premium before forced exit. 0 = disabled.
 
 # Derived
 STRATEGY_NAME = f"FirstMinCandle-{SYMBOL}"
@@ -965,6 +966,12 @@ def monitor_stop_loss():
         if TARGET_PCT > 0 and profit_pct >= TARGET_PCT:
             log(f"  🎯 PROFIT TARGET HIT! Option LTP={current_option_ltp}, Entry={entry_option_price_saved}, Profit={profit_pct:.1f}% ≥ {TARGET_PCT}%")
             place_exit(f"Profit Target {profit_pct:.1f}% (target={TARGET_PCT}%)")
+            return
+
+        # Check max loss exit (hard exit)
+        if MAX_LOSS_PCT > 0 and profit_pct <= -MAX_LOSS_PCT:
+            log(f"  🛑 MAX LOSS HIT! Option LTP={current_option_ltp}, Entry={entry_option_price_saved}, Loss={profit_pct:.1f}% ≤ -{MAX_LOSS_PCT}%")
+            place_exit(f"Max Loss {profit_pct:.1f}% (limit=-{MAX_LOSS_PCT}%)")
             return
 
         # Check if TSL should be activated (Phase 1 → Phase 2)
