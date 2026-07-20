@@ -114,7 +114,7 @@ ENTRY_END = os.getenv("STRATEGY_ENTRY_END", "10:30")
 EXIT_TIME = os.getenv("STRATEGY_EXIT_TIME", "15:15")
 PRODUCT = os.getenv("STRATEGY_PRODUCT", "MIS")
 EXCHANGE = os.getenv("STRATEGY_EXCHANGE", "NFO")
-TARGET_PCT = float(os.getenv("STRATEGY_TARGET_PCT", "0"))  # Profit target %. 0 = disabled. E.g., 15 = exit at 15% profit
+TARGET_PCT = float(os.getenv("STRATEGY_TARGET_PCT", "30"))  # Profit target %. 0 = disabled. E.g., 15 = exit at 15% profit
 ORDER_TYPE = os.getenv("STRATEGY_ORDER_TYPE", "MARKET")  # MARKET or LIMIT
 ATR_MULTIPLIER = float(os.getenv("STRATEGY_ATR_MULTIPLIER", "2"))  # ATR multiplier for trailing stop (default: 2)
 RETRACEMENT_BUFFER = float(os.getenv("STRATEGY_RETRACEMENT_BUFFER", "2"))  # Points buffer for retracement/re-test checks (default: 2)
@@ -129,8 +129,8 @@ RETRACEMENT_BUFFER = float(os.getenv("STRATEGY_RETRACEMENT_BUFFER", "2"))  # Poi
 # | 50          | Very smooth                  | Long-term trend following |
 
 ATR_PERIOD = int(os.getenv("STRATEGY_ATR_PERIOD", "7"))  # ATR lookback period (default: 7 candles)
-TSL_ACTIVATION_PCT = float(os.getenv("STRATEGY_TSL_ACTIVATION_PCT", "5"))  # Profit % to activate ATR TSL (default: 5%). Until then, use candle-based SL.
-MAX_CANDLE_RANGE = float(os.getenv("STRATEGY_MAX_CANDLE_RANGE", "80"))  # Max 1st candle range (H-L) in points. If exceeded, no trade today. 0 = disabled.
+TSL_ACTIVATION_PCT = float(os.getenv("STRATEGY_TSL_ACTIVATION_PCT", "10"))  # Profit % to activate ATR TSL (default: 5%). Until then, use candle-based SL.
+MAX_CANDLE_RANGE = float(os.getenv("STRATEGY_MAX_CANDLE_RANGE", "70"))  # Max 1st candle range (H-L) in points. If exceeded, no trade today. 0 = disabled.
 MAX_LOSS_PCT = float(os.getenv("STRATEGY_MAX_LOSS_PCT", "20"))  # Max loss % on option premium before forced exit. 0 = disabled.
 
 # Derived

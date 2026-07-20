@@ -122,7 +122,8 @@ ORDER_TYPE = os.getenv("STRATEGY_ORDER_TYPE", "MARKET")
 ATR_MULTIPLIER = float(os.getenv("STRATEGY_ATR_MULTIPLIER", "2"))
 RETRACEMENT_BUFFER = float(os.getenv("STRATEGY_RETRACEMENT_BUFFER", "2"))
 ATR_PERIOD = int(os.getenv("STRATEGY_ATR_PERIOD", "7"))
-TSL_ACTIVATION_PCT = float(os.getenv("STRATEGY_TSL_ACTIVATION_PCT", "5"))  # Profit % to activate ATR TSL (default: 5%)
+TSL_ACTIVATION_PCT = float(os.getenv("STRATEGY_TSL_ACTIVATION_PCT", "10"))  # Profit % to activate ATR TSL (default: 5%)
+MAX_LOSS_PCT = float(os.getenv("STRATEGY_MAX_LOSS_PCT", "15"))  # Max loss % on option premium before forced exit. 0 = disabled.
 
 # Derived
 STRATEGY_NAME = f"TC5minCandle-{SYMBOL}"
@@ -882,6 +883,12 @@ def monitor_stop_loss():
         if TARGET_PCT > 0 and profit_pct >= TARGET_PCT:
             log(f"  🎯 PROFIT TARGET HIT! Option LTP={current_option_ltp}, Entry={entry_option_price_saved}, Profit={profit_pct:.1f}% ≥ {TARGET_PCT}%")
             place_exit(f"Profit Target {profit_pct:.1f}% (target={TARGET_PCT}%)")
+            return
+
+        # Check max loss exit (hard exit)
+        if MAX_LOSS_PCT > 0 and profit_pct <= -MAX_LOSS_PCT:
+            log(f"  🛑 MAX LOSS HIT! Option LTP={current_option_ltp}, Entry={entry_option_price_saved}, Loss={profit_pct:.1f}% ≤ -{MAX_LOSS_PCT}%")
+            place_exit(f"Max Loss {profit_pct:.1f}% (limit=-{MAX_LOSS_PCT}%)")
             return
 
         # Check if TSL should be activated (Phase 1 → Phase 2)
