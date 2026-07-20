@@ -130,6 +130,7 @@ RETRACEMENT_BUFFER = float(os.getenv("STRATEGY_RETRACEMENT_BUFFER", "2"))  # Poi
 
 ATR_PERIOD = int(os.getenv("STRATEGY_ATR_PERIOD", "7"))  # ATR lookback period (default: 7 candles)
 TSL_ACTIVATION_PCT = float(os.getenv("STRATEGY_TSL_ACTIVATION_PCT", "5"))  # Profit % to activate ATR TSL (default: 5%). Until then, use candle-based SL.
+MAX_CANDLE_RANGE = float(os.getenv("STRATEGY_MAX_CANDLE_RANGE", "80"))  # Max 1st candle range (H-L) in points. If exceeded, no trade today. 0 = disabled.
 
 # Derived
 STRATEGY_NAME = f"FirstMinCandle-{SYMBOL}"
@@ -360,10 +361,21 @@ def get_first_candle():
             first_candle_close = round(float(candle["close"]), 2)
             first_candle_mid = round((first_candle_high + first_candle_low) / 2, 2)
 
+            # Check if candle range exceeds max allowed
+            candle_range = first_candle_high - first_candle_low
+            if MAX_CANDLE_RANGE > 0 and candle_range > MAX_CANDLE_RANGE:
+                log(f"")
+                log(f"{'='*50}")
+                log(f"  1st CANDLE: H={first_candle_high} L={first_candle_low} C={first_candle_close}")
+                log(f"  Range: {candle_range:.2f} pts > MAX {MAX_CANDLE_RANGE} pts")
+                log(f"  ❌ CANDLE TOO LARGE — NO TRADE TODAY")
+                log(f"{'='*50}")
+                return False
+
             log(f"")
             log(f"{'='*50}")
             log(f"  1st CANDLE: H={first_candle_high} L={first_candle_low} C={first_candle_close}")
-            log(f"  Midpoint: {first_candle_mid}")
+            log(f"  Range: {candle_range:.2f} pts | Midpoint: {first_candle_mid}")
             log(f"{'='*50}")
             log(f"  Waiting for breakout:")
             log(f"    CALL entry: any candle close > {first_candle_high}")
