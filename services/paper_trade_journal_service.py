@@ -63,6 +63,29 @@ def open_trade(trade_data: dict) -> dict:
         if isinstance(fields["custom_metadata"], dict):
             fields["custom_metadata"] = json.dumps(fields["custom_metadata"])
 
+    # Convert trade_date string to date object if needed
+    if "trade_date" in fields and fields["trade_date"] is not None:
+        if isinstance(fields["trade_date"], str):
+            from datetime import datetime as dt
+            try:
+                fields["trade_date"] = dt.strptime(fields["trade_date"], "%Y-%m-%d").date()
+            except ValueError:
+                fields["trade_date"] = None
+
+    # Convert entry_time/exit_time strings to datetime objects if needed
+    for time_field in ("entry_time", "exit_time"):
+        if time_field in fields and fields[time_field] is not None:
+            if isinstance(fields[time_field], str):
+                from datetime import datetime as dt
+                try:
+                    # Handle ISO format with timezone info
+                    fields[time_field] = dt.fromisoformat(fields[time_field])
+                except ValueError:
+                    try:
+                        fields[time_field] = dt.strptime(fields[time_field], "%Y-%m-%dT%H:%M:%S")
+                    except ValueError:
+                        fields[time_field] = None
+
     trade = create_trade(**fields)
     return {"status": "success", "data": {"trade_id": trade.id}}
 
@@ -143,6 +166,18 @@ def close_trade(trade_id: int, update_data: dict) -> dict:
 
         if pnl is not None:
             fields["pnl"] = round(pnl, 4)
+
+    # Convert exit_time string to datetime object if needed
+    if "exit_time" in fields and fields["exit_time"] is not None:
+        if isinstance(fields["exit_time"], str):
+            from datetime import datetime as dt
+            try:
+                fields["exit_time"] = dt.fromisoformat(fields["exit_time"])
+            except ValueError:
+                try:
+                    fields["exit_time"] = dt.strptime(fields["exit_time"], "%Y-%m-%dT%H:%M:%S")
+                except ValueError:
+                    fields["exit_time"] = None
 
     updated_trade = update_trade(trade_id, **fields)
     return {"status": "success", "data": _trade_to_dict(updated_trade)}
