@@ -295,18 +295,11 @@ def is_past_time(hour, minute):
 
 
 def get_first_candle():
-    """Capture the 1-min candle at ENTRY_START time after it closes."""
+    """Capture the 9:15 AM 1-min candle (first candle of the day) after it closes."""
     global first_candle_high, first_candle_low, first_candle_close, first_candle_mid, bias
 
-    # The candle we want starts at ENTRY_START and closes 1 min later
-    candle_close_h = ENTRY_START_H
-    candle_close_m = ENTRY_START_M + 1
-    if candle_close_m >= 60:
-        candle_close_h += 1
-        candle_close_m -= 60
-
-    log(f"Waiting for 1-min candle to close ({ENTRY_START_H:02d}:{ENTRY_START_M:02d} - {candle_close_h:02d}:{candle_close_m:02d})...")
-    wait_for_time(candle_close_h, candle_close_m, "1st candle close")
+    log(f"Waiting for 1st candle (09:15) to close...")
+    wait_for_time(9, 16, "1st candle close")
 
     # Extra 5 seconds to ensure candle is fully formed
     time.sleep(5)
@@ -348,18 +341,19 @@ def get_first_candle():
                 time.sleep(3)
                 continue
 
-            # Find the candle at ENTRY_START time
+            # Find the 9:15 candle specifically
             candle = None
             for idx in today_data.index:
                 if hasattr(idx, 'hour'):
-                    if idx.hour == ENTRY_START_H and idx.minute == ENTRY_START_M:
+                    if idx.hour == 9 and idx.minute == 15:
                         candle = today_data.loc[idx]
                         break
 
-            # Fallback: use the last candle if exact match not found
+            # Fallback: use the first candle if 9:15 not found
             if candle is None:
-                candle = today_data.iloc[-1]
-                log(f"  ⚠️ Exact candle at {ENTRY_START} not found, using latest available candle")
+                candle = today_data.iloc[0]
+                log(f"  ⚠️ 9:15 candle not found, using first available candle")
+                candle = today_data.iloc[0]
 
             first_candle_high = round(float(candle["high"]), 2)
             first_candle_low = round(float(candle["low"]), 2)
@@ -996,8 +990,8 @@ def main():
     log(f"{'='*60}")
     log(f"")
 
-    # Step 1: Wait for strategy start time
-    wait_for_time(ENTRY_START_H, ENTRY_START_M, "strategy start")
+    # Step 1: Wait for market open
+    wait_for_time(9, 15, "market open")
 
     # Step 2: Capture 1st candle
     if not get_first_candle():
