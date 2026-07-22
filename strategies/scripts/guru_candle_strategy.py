@@ -127,6 +127,7 @@ TARGET_PCT = float(os.getenv("STRATEGY_TARGET_PCT", "0"))  # Profit target %. 0 
 ORDER_TYPE = os.getenv("STRATEGY_ORDER_TYPE", "LIMIT")  # MARKET or LIMIT (default LIMIT for stock options)
 RETRACEMENT_BUFFER = float(os.getenv("STRATEGY_RETRACEMENT_BUFFER", "2"))
 MAX_LOSS_PCT = float(os.getenv("STRATEGY_MAX_LOSS_PCT", "20"))  # Max loss % on option premium before forced exit. 0 = disabled.
+MAX_FLIP_ENTRIES = int(os.getenv("STRATEGY_MAX_FLIP_ENTRIES", "3"))  # Max flip re-entries after SL hit (default: 3)
 
 # The candle to monitor (11:39 AM)
 CANDLE_TIME = "11:39"
@@ -870,8 +871,59 @@ def monitor_stop_loss():
             return
 
 
+def monitor_for_flip_entry():
+    """After SL hit, monitor for opposite direction breakout (no retracement needed).
+    Returns True if flip entry was taken, False if entry window expired."""
+    global bias, entry_done, exit_done
+
+    if bias == "BULLISH":
+        bias = "BEARISH"
+    else:
+        bias = "BULLISH"
+
+    log(f"")
+    log(f"  🔄 FLIP ENTRY MODE: Looking for {bias} breakout (no retracement needed)")
+    if bias == "BULLISH":
+        log(f"    Entry trigger: 1-min close > {candle_high}")
+    else:
+        log(f"    Entry trigger: 1-min close < {candle_low}")
+
+    while True:
+        if is_past_time(ENTRY_END_H, ENTRY_END_M):
+            log(f"⏰ Entry window closed ({ENTRY_END}). No flip entry.")
+            return False
+
+        now = datetime.now()
+        seconds_to_next_min = 60 - now.second + 5
+        time.sleep(seconds_to_next_min)
+
+        candles = get_latest_candles()
+        if candles is None or (hasattr(candles, 'empty') and candles.empty):
+            log(f"  ⚠️ No candle data, retrying...")
+            continue
+
+        latest = candles.iloc[-1]
+        latest_close = round(float(latest["close"]), 2)
+        candle_time_str = candles.index[-1] if hasattr(candles.index[-1], 'strftime') else "?"
+        log(f"  Flip [{candle_time_str}] C={latest_close} | Waiting for {bias} breakout")
+
+        if bias == "BULLISH" and latest_close > candle_high:
+            log(f"  ✅ FLIP ENTRY CONFIRMED: BULLISH! Close ({latest_close}) > HIGH ({candle_high})")
+            entry_done = False
+            exit_done = False
+            place_entry("CE")
+            return entry_done
+
+        elif bias == "BEARISH" and latest_close < candle_low:
+            log(f"  ✅ FLIP ENTRY CONFIRMED: BEARISH! Close ({latest_close}) < LOW ({candle_low})")
+            entry_done = False
+            exit_done = False
+            place_entry("PE")
+            return entry_done
+
+
 def main():
-    """Main strategy execution."""
+    """Main strategy execution with flip-entry support."""
     log(f"")
     log(f"{'='*60}")
     log(f"  GURU CANDLE STRATEGY (Stock Options)")
@@ -880,6 +932,7 @@ def main():
     log(f"  Candle: {CANDLE_TIME} | Entry: {ENTRY_START}-{ENTRY_END} | Exit: {EXIT_TIME}")
     log(f"  Product: {PRODUCT} | Options Exch: {OPTIONS_EXCHANGE}")
     log(f"  Target: {TARGET_PCT}% | Max Loss: {MAX_LOSS_PCT}% | Order: {ORDER_TYPE}")
+    log(f"  Max Flip Entries: {MAX_FLIP_ENTRIES}")
     log(f"{'='*60}")
     log(f"")
 
@@ -890,18 +943,42 @@ def main():
     if not get_guru_candle():
         return
 
-    # Step 3: Monitor for entry
+    # Step 3: Monitor for initial entry (with retracement)
     monitor_for_entry()
 
-    # Step 4: Monitor SL / exit
-    monitor_stop_loss()
+    # Step 4: Trade loop — SL monitoring + flip entries
+    sl_count = 0
 
-    # Step 5: Forced exit — ensure position is closed before script ends
+    while True:
+        if entry_done and not exit_done:
+            monitor_stop_loss()
+
+        if exit_done:
+            sl_count += 1
+            log(f"")
+            log(f"  📊 Trade exited. SL/Exit count today: {sl_count}/{MAX_FLIP_ENTRIES}")
+
+            if sl_count >= MAX_FLIP_ENTRIES:
+                log(f"  ❌ Max flip entries ({MAX_FLIP_ENTRIES}) reached. Done for today.")
+                break
+
+            if is_past_time(ENTRY_END_H, ENTRY_END_M):
+                log(f"  ⏰ Entry window closed. No more flip entries.")
+                break
+
+            flip_success = monitor_for_flip_entry()
+            if not flip_success:
+                log(f"  No flip entry taken. Done for today.")
+                break
+        else:
+            break
+
+    # Final forced exit
     if entry_done and not exit_done:
         log(f"  ⚠️ Forced exit: position still open at strategy end!")
         place_exit(f"Strategy end - forced exit at {EXIT_TIME}")
 
-    log(f"\n✅ Strategy complete for today.")
+    log(f"\n✅ Strategy complete for today. Trades taken: {sl_count + (1 if entry_done else 0)}")
 
 
 if __name__ == "__main__":
