@@ -789,23 +789,30 @@ def check_candle_sl(latest_close, candle_time, profit_pct):
 
 
 def monitor_stop_loss():
-    """Monitor candle-based SL, profit target, max loss, and exit time (5-min candles)."""
+    """Monitor candle-based SL, profit target, max loss, and exit time (5-min candles).
+    
+    Returns:
+        "sl" — candle SL hit or max loss % hit
+        "profit" — profit target hit
+        "time" — exit time reached
+        None — if no entry was done (early return)
+    """
     if not entry_done:
-        return
+        return None
 
     log(f"Monitoring SL (candle-based) | Target: {TARGET_PCT}% | Max Loss: {MAX_LOSS_PCT}% | Exit: {EXIT_TIME}")
 
     while True:
         if is_past_time(EXIT_H, EXIT_M):
             place_exit(f"Exit time {EXIT_TIME}")
-            return
+            return "time"
 
         wait_secs = get_seconds_to_next_5min_close()
         time.sleep(wait_secs)
 
         if is_past_time(EXIT_H, EXIT_M):
             place_exit(f"Exit time {EXIT_TIME}")
-            return
+            return "time"
 
         # Get current option premium for profit/loss check
         current_option_ltp = None
@@ -819,13 +826,13 @@ def monitor_stop_loss():
         if TARGET_PCT > 0 and profit_pct >= TARGET_PCT:
             log(f"  🎯 PROFIT TARGET HIT! Option LTP={current_option_ltp}, Entry={entry_option_price_saved}, Profit={profit_pct:.1f}% ≥ {TARGET_PCT}%")
             place_exit(f"Profit Target {profit_pct:.1f}% (target={TARGET_PCT}%)")
-            return
+            return "profit"
 
         # Check max loss
         if MAX_LOSS_PCT > 0 and profit_pct <= -MAX_LOSS_PCT:
             log(f"  🛑 MAX LOSS HIT! Option LTP={current_option_ltp}, Entry={entry_option_price_saved}, Loss={profit_pct:.1f}% ≤ -{MAX_LOSS_PCT}%")
             place_exit(f"Max Loss {profit_pct:.1f}% (limit=-{MAX_LOSS_PCT}%)")
-            return
+            return "sl"
 
         # Fetch latest 5-min candle close for SL check
         candles = get_latest_5min_candles()
@@ -837,7 +844,7 @@ def monitor_stop_loss():
         candle_time = candles.index[-1] if hasattr(candles.index[-1], 'strftime') else "?"
 
         if check_candle_sl(latest_close, candle_time, profit_pct):
-            return
+            return "sl"
 
 
 def monitor_for_flip_entry():
@@ -918,9 +925,14 @@ def main():
 
     while True:
         if entry_done and not exit_done:
-            monitor_stop_loss()
+            exit_reason = monitor_stop_loss()
 
         if exit_done:
+            # Only attempt flip re-entry on SL-type exits (candle SL or max loss)
+            if exit_reason != "sl":
+                log(f"  ✅ Exit was due to '{exit_reason}' — no flip re-entry needed. Done for today.")
+                break
+
             sl_count += 1
             log(f"")
             log(f"  📊 Trade exited. SL/Exit count today: {sl_count}/{MAX_FLIP_ENTRIES}")
