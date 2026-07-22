@@ -23,9 +23,10 @@ Configuration (via Environment Variables on Python Strategy page):
 """
 
 import os
+import sys
+import signal
 import time
 import requests
-import numpy as np
 from datetime import datetime, timedelta
 
 from openalgo import api
@@ -116,20 +117,7 @@ PRODUCT = os.getenv("STRATEGY_PRODUCT", "MIS")
 EXCHANGE = os.getenv("STRATEGY_EXCHANGE", "NFO")
 TARGET_PCT = float(os.getenv("STRATEGY_TARGET_PCT", "30"))  # Profit target %. 0 = disabled. E.g., 15 = exit at 15% profit
 ORDER_TYPE = os.getenv("STRATEGY_ORDER_TYPE", "MARKET")  # MARKET or LIMIT
-ATR_MULTIPLIER = float(os.getenv("STRATEGY_ATR_MULTIPLIER", "2"))  # ATR multiplier for trailing stop (default: 2)
 RETRACEMENT_BUFFER = float(os.getenv("STRATEGY_RETRACEMENT_BUFFER", "2"))  # Points buffer for retracement/re-test checks (default: 2)
-
-# | ATR Period | Behavior                     | Best For                  |
-# | ----------- | ---------------------------- | ------------------------- |
-# | 5           | Very responsive, more noise  | Scalping                  |
-# | 7           | Fast                         | Intraday momentum         |
-# | 10          | Moderately fast              | Intraday                  |
-# | **14**      | Balanced (industry standard) | Most strategies           |
-# | 21          | Smoother                     | Swing trading             |
-# | 50          | Very smooth                  | Long-term trend following |
-
-ATR_PERIOD = int(os.getenv("STRATEGY_ATR_PERIOD", "7"))  # ATR lookback period (default: 7 candles)
-TSL_ACTIVATION_PCT = float(os.getenv("STRATEGY_TSL_ACTIVATION_PCT", "10"))  # Profit % to activate ATR TSL (default: 5%). Until then, use candle-based SL.
 MAX_CANDLE_RANGE = float(os.getenv("STRATEGY_MAX_CANDLE_RANGE", "70"))  # Max 1st candle range (H-L) in points. If exceeded, no trade today. 0 = disabled.
 MAX_LOSS_PCT = float(os.getenv("STRATEGY_MAX_LOSS_PCT", "20"))  # Max loss % on option premium before forced exit. 0 = disabled.
 
@@ -171,13 +159,32 @@ option_exchange = None
 actual_quantity = None
 journal_trade_id = None
 entry_option_price_saved = None  # Saved for profit % calculation
-highest_spot_since_entry = None  # Track highest spot price for TSL
-trailing_stop_level = None  # Current TSL level (spot price based)
 
 
 def log(msg):
     """Print with timestamp."""
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+
+
+def graceful_exit_handler(signum, frame):
+    """Handle SIGTERM/SIGINT: exit open position before dying."""
+    sig_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
+    log(f"")
+    log(f"⚠️ {sig_name} received — graceful shutdown initiated")
+
+    if entry_done and not exit_done and option_symbol:
+        log(f"  📤 Exiting open position before shutdown...")
+        place_exit(f"Graceful shutdown ({sig_name})")
+    else:
+        log(f"  No open position to exit.")
+
+    log(f"  👋 Strategy terminated gracefully.")
+    sys.exit(0)
+
+
+# Register signal handlers for graceful shutdown
+signal.signal(signal.SIGTERM, graceful_exit_handler)
+# signal.signal(signal.SIGINT, graceful_exit_handler)
 
 
 def get_nearest_expiry():
@@ -795,48 +802,7 @@ def monitor_for_retest():
             return
 
 
-def compute_atr():
-    """Compute ATR manually using Wilder's smoothing method (same as talib).
-    
-    True Range = max(high-low, abs(high-prev_close), abs(low-prev_close))
-    ATR = Wilder's smoothed average of True Range over ATR_PERIOD candles.
-    
-    Uses only numpy — no talib dependency required.
-    """
-    candles = get_latest_candles()
-    if candles is None or len(candles) < ATR_PERIOD + 1:
-        return None
 
-    high = np.array(candles["high"], dtype=float)
-    low = np.array(candles["low"], dtype=float)
-    close = np.array(candles["close"], dtype=float)
-
-    # Compute True Range array
-    prev_close = np.roll(close, 1)
-    prev_close[0] = close[0]  # First element has no previous, use itself
-
-    tr1 = high - low
-    tr2 = np.abs(high - prev_close)
-    tr3 = np.abs(low - prev_close)
-    true_range = np.maximum(tr1, np.maximum(tr2, tr3))
-
-    # Wilder's smoothing: first ATR = SMA of first N true ranges, then EMA
-    if len(true_range) < ATR_PERIOD + 1:
-        return None
-
-    # Start from index 1 (skip first element which has no real prev_close)
-    tr_valid = true_range[1:]
-    if len(tr_valid) < ATR_PERIOD:
-        return None
-
-    # Initial ATR = simple average of first ATR_PERIOD values
-    atr_value = np.mean(tr_valid[:ATR_PERIOD])
-
-    # Apply Wilder's smoothing for remaining values
-    for i in range(ATR_PERIOD, len(tr_valid)):
-        atr_value = (atr_value * (ATR_PERIOD - 1) + tr_valid[i]) / ATR_PERIOD
-
-    return round(atr_value, 2)
 
 
 def check_candle_sl(latest_close, candle_time, profit_pct):
@@ -857,93 +823,21 @@ def check_candle_sl(latest_close, candle_time, profit_pct):
     return False
 
 
-def check_atr_tsl(latest_close, candle_time, profit_pct):
-    """Phase 2: Check ATR trailing stop-loss.
-    
-    Updates trailing_stop_level based on ATR, returns True if TSL hit and exit was placed.
-    """
-    global highest_spot_since_entry, trailing_stop_level
 
-    if bias == "BULLISH":
-        highest_spot_since_entry = max(highest_spot_since_entry, latest_close)
-        current_atr = compute_atr()
-        if current_atr is not None:
-            atr_stop = round(highest_spot_since_entry - (ATR_MULTIPLIER * current_atr), 2)
-            old_tsl = trailing_stop_level
-            trailing_stop_level = max(trailing_stop_level, atr_stop)
-            if trailing_stop_level > old_tsl:
-                log(f"  📈 TSL RAISED: {old_tsl} → {trailing_stop_level} (High={highest_spot_since_entry}, ATR={current_atr})")
-
-        log(f"  TSL [{candle_time}] Spot={latest_close} | TSL={trailing_stop_level} | High={highest_spot_since_entry} | Profit={profit_pct:.1f}%")
-
-        if latest_close < trailing_stop_level:
-            place_exit(f"TSL HIT - Spot {latest_close} < TSL {trailing_stop_level}")
-            return True
-
-    elif bias == "BEARISH":
-        highest_spot_since_entry = min(highest_spot_since_entry, latest_close)
-        current_atr = compute_atr()
-        if current_atr is not None:
-            atr_stop = round(highest_spot_since_entry + (ATR_MULTIPLIER * current_atr), 2)
-            old_tsl = trailing_stop_level
-            trailing_stop_level = min(trailing_stop_level, atr_stop)
-            if trailing_stop_level < old_tsl:
-                log(f"  📉 TSL LOWERED: {old_tsl} → {trailing_stop_level} (Low={highest_spot_since_entry}, ATR={current_atr})")
-
-        log(f"  TSL [{candle_time}] Spot={latest_close} | TSL={trailing_stop_level} | Low={highest_spot_since_entry} | Profit={profit_pct:.1f}%")
-
-        if latest_close > trailing_stop_level:
-            place_exit(f"TSL HIT - Spot {latest_close} > TSL {trailing_stop_level}")
-            return True
-
-    return False
 
 
 def monitor_stop_loss():
-    """Monitor with two-phase SL logic:
-    
-    Phase 1 (candle-based SL): Until option profit crosses TSL_ACTIVATION_PCT,
-             use the defined candle HIGH/LOW as stop-loss.
-    Phase 2 (ATR TSL): Once profit crosses TSL_ACTIVATION_PCT, switch to ATR
-             trailing stop which only moves in your favor.
-    
-    Priority each minute: Exit Time → Profit Target → SL/TSL check.
-    """
-    global highest_spot_since_entry, trailing_stop_level
-
+    """Monitor candle-based SL, profit target, max loss, and exit time."""
     if not entry_done:
         return
 
-    # Initialize: get current spot
-    spot_ltp = get_spot_ltp()
-    if spot_ltp is None:
-        spot_ltp = first_candle_close
-
-    # Initial state
-    if bias == "BULLISH":
-        highest_spot_since_entry = spot_ltp
-        trailing_stop_level = first_candle_low
-    else:
-        highest_spot_since_entry = spot_ltp
-        trailing_stop_level = first_candle_high
-
-    tsl_active = False
-
-    log(f"Monitoring SL (2-phase: candle SL → ATR TSL after {TSL_ACTIVATION_PCT}% profit)...")
-    log(f"  Direction: {bias} | Phase 1 SL: {trailing_stop_level} | Spot: {spot_ltp}")
-    log(f"  ATR config: period={ATR_PERIOD}, multiplier={ATR_MULTIPLIER}")
-    if TARGET_PCT > 0:
-        log(f"  Profit Target: {TARGET_PCT}% | Exit Time: {EXIT_TIME}")
-    else:
-        log(f"  Exit Time: {EXIT_TIME}")
+    log(f"Monitoring SL (candle-based) | Target: {TARGET_PCT}% | Max Loss: {MAX_LOSS_PCT}% | Exit: {EXIT_TIME}")
 
     while True:
-        # Check exit time
         if is_past_time(EXIT_H, EXIT_M):
             place_exit(f"Exit time {EXIT_TIME}")
             return
 
-        # Wait for the current minute to close
         now = datetime.now()
         seconds_to_next_min = 60 - now.second + 5
         time.sleep(seconds_to_next_min)
@@ -952,34 +846,27 @@ def monitor_stop_loss():
             place_exit(f"Exit time {EXIT_TIME}")
             return
 
-        # Get current option premium for profit check
+        # Get current option premium for profit/loss check
         current_option_ltp = None
+        profit_pct = 0.0
         if entry_option_price_saved and entry_option_price_saved > 0:
             current_option_ltp = get_option_ltp(option_symbol, option_exchange)
+            if current_option_ltp is not None:
+                profit_pct = ((current_option_ltp - entry_option_price_saved) / entry_option_price_saved) * 100
 
-        # Calculate current profit %
-        profit_pct = 0.0
-        if current_option_ltp is not None and entry_option_price_saved and entry_option_price_saved > 0:
-            profit_pct = ((current_option_ltp - entry_option_price_saved) / entry_option_price_saved) * 100
-
-        # Check profit target exit (hard exit)
+        # Check profit target
         if TARGET_PCT > 0 and profit_pct >= TARGET_PCT:
             log(f"  🎯 PROFIT TARGET HIT! Option LTP={current_option_ltp}, Entry={entry_option_price_saved}, Profit={profit_pct:.1f}% ≥ {TARGET_PCT}%")
             place_exit(f"Profit Target {profit_pct:.1f}% (target={TARGET_PCT}%)")
             return
 
-        # Check max loss exit (hard exit)
+        # Check max loss
         if MAX_LOSS_PCT > 0 and profit_pct <= -MAX_LOSS_PCT:
             log(f"  🛑 MAX LOSS HIT! Option LTP={current_option_ltp}, Entry={entry_option_price_saved}, Loss={profit_pct:.1f}% ≤ -{MAX_LOSS_PCT}%")
             place_exit(f"Max Loss {profit_pct:.1f}% (limit=-{MAX_LOSS_PCT}%)")
             return
 
-        # Check if TSL should be activated (Phase 1 → Phase 2)
-        if not tsl_active and profit_pct >= TSL_ACTIVATION_PCT:
-            tsl_active = True
-            log(f"  🔓 ATR TSL ACTIVATED! Profit={profit_pct:.1f}% crossed {TSL_ACTIVATION_PCT}% threshold")
-
-        # Fetch latest candle close
+        # Fetch latest candle close for SL check
         candles = get_latest_candles()
         if candles is None or (hasattr(candles, 'empty') and candles.empty):
             log(f"  No candle data for SL check, retrying...")
@@ -988,13 +875,8 @@ def monitor_stop_loss():
         latest_close = round(float(candles.iloc[-1]["close"]), 2)
         candle_time = candles.index[-1] if hasattr(candles.index[-1], 'strftime') else "?"
 
-        # Dispatch to the appropriate SL phase
-        if tsl_active:
-            if check_atr_tsl(latest_close, candle_time, profit_pct):
-                return
-        else:
-            if check_candle_sl(latest_close, candle_time, profit_pct):
-                return
+        if check_candle_sl(latest_close, candle_time, profit_pct):
+            return
 
 
 def main():
@@ -1005,7 +887,7 @@ def main():
     log(f"  Symbol: {SYMBOL} | Strike: {STRIKE_SELECTION} | Lots: {LOTS}")
     log(f"  Entry: {ENTRY_START}-{ENTRY_END} | Exit: {EXIT_TIME}")
     log(f"  Product: {PRODUCT} | Exchange: {EXCHANGE}")
-    log(f"  TSL: ATR({ATR_PERIOD}) × {ATR_MULTIPLIER} | Target: {TARGET_PCT}% | Order: {ORDER_TYPE}")
+    log(f"  Target: {TARGET_PCT}% | Max Loss: {MAX_LOSS_PCT}% | Order: {ORDER_TYPE}")
     log(f"{'='*60}")
     log(f"")
 
