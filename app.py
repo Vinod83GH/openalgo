@@ -135,6 +135,7 @@ from blueprints.broker_session import broker_session_bp  # Import the broker ses
 from blueprints.kill_switch import kill_switch_bp  # Import the kill switch blueprint
 from blueprints.paper_journal import paper_journal_bp  # Import the paper journal blueprint
 from blueprints.chartink import chartink_bp  # Import the chartink blueprint
+from blueprints.tv_webhook import tv_webhook_bp  # Import the TV webhook blueprint
 from blueprints.core import core_bp
 from blueprints.dashboard import dashboard_bp
 from blueprints.flow import flow_bp  # Import the flow blueprint
@@ -347,6 +348,7 @@ def create_app():
     app.register_blueprint(analyzer_bp)
     app.register_blueprint(settings_bp)
     app.register_blueprint(chartink_bp)
+    app.register_blueprint(tv_webhook_bp)  # Register TV webhook blueprint
     app.register_blueprint(traffic_bp)
     app.register_blueprint(latency_bp)
     app.register_blueprint(leverage_bp)  # Register Leverage blueprint
@@ -386,6 +388,7 @@ def create_app():
     with app.app_context():
         # Exempt webhook endpoints from CSRF protection
         csrf.exempt(app.view_functions["chartink_bp.webhook"])
+        csrf.exempt(app.view_functions["tv_webhook_bp.webhook"])
         csrf.exempt(app.view_functions["strategy_bp.webhook"])
         csrf.exempt(app.view_functions["flow.trigger_webhook"])
         csrf.exempt(app.view_functions["flow.trigger_webhook_with_symbol"])
