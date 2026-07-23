@@ -119,7 +119,7 @@ TARGET_PCT = float(os.getenv("STRATEGY_TARGET_PCT", "30"))  # Profit target %. 0
 ORDER_TYPE = os.getenv("STRATEGY_ORDER_TYPE", "MARKET")  # MARKET or LIMIT
 RETRACEMENT_BUFFER = float(os.getenv("STRATEGY_RETRACEMENT_BUFFER", "2"))  # Points buffer for retracement/re-test checks (default: 2)
 MAX_CANDLE_RANGE = float(os.getenv("STRATEGY_MAX_CANDLE_RANGE", "70"))  # Max 1st candle range (H-L) in points. If exceeded, no trade today. 0 = disabled.
-MAX_LOSS_PCT = float(os.getenv("STRATEGY_MAX_LOSS_PCT", "20"))  # Max loss % on option premium before forced exit. 0 = disabled.
+MAX_LOSS_PCT = float(os.getenv("STRATEGY_MAX_LOSS_PCT", "15"))  # Max loss % on option premium before forced exit. 0 = disabled.
 MAX_FLIP_ENTRIES = int(os.getenv("STRATEGY_MAX_FLIP_ENTRIES", "3"))  # Max flip re-entries after SL hit (default: 3)
 
 # Derived
@@ -964,6 +964,7 @@ def main():
 
     # Step 4: Trade loop — SL monitoring + flip entries
     sl_count = 0
+    cumulative_loss_pct = 0.0  # Track total loss % across all trades today
 
     while True:
         if entry_done and not exit_done:
@@ -975,9 +976,22 @@ def main():
                 log(f"  ✅ Exit was due to '{exit_reason}' — no flip re-entry needed. Done for today.")
                 break
 
+            # Calculate loss % for this trade and add to cumulative
+            if entry_option_price_saved and entry_option_price_saved > 0:
+                exit_option_ltp = get_option_ltp(option_symbol, option_exchange)
+                if exit_option_ltp is not None:
+                    trade_loss_pct = ((exit_option_ltp - entry_option_price_saved) / entry_option_price_saved) * 100
+                    cumulative_loss_pct += trade_loss_pct
+                    log(f"  📉 Trade loss: {trade_loss_pct:.1f}% | Cumulative day loss: {cumulative_loss_pct:.1f}%")
+
             sl_count += 1
             log(f"")
-            log(f"  📊 Trade exited. SL/Exit count today: {sl_count}/{MAX_FLIP_ENTRIES}")
+            log(f"  📊 Trade exited (SL). Count: {sl_count}/{MAX_FLIP_ENTRIES} | Day Loss: {cumulative_loss_pct:.1f}%")
+
+            # Check if cumulative daily loss exceeds max allowed
+            if MAX_LOSS_PCT > 0 and cumulative_loss_pct <= -MAX_LOSS_PCT:
+                log(f"  🛑 DAILY MAX LOSS REACHED! Cumulative: {cumulative_loss_pct:.1f}% ≤ -{MAX_LOSS_PCT}%. No more entries.")
+                break
 
             if sl_count >= MAX_FLIP_ENTRIES:
                 log(f"  ❌ Max flip entries ({MAX_FLIP_ENTRIES}) reached. Done for today.")

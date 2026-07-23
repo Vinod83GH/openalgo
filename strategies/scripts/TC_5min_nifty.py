@@ -922,6 +922,7 @@ def main():
 
     # Step 4: Trade loop — SL monitoring + flip entries
     sl_count = 0
+    cumulative_loss_pct = 0.0  # Track total loss % across all trades today
 
     while True:
         if entry_done and not exit_done:
@@ -933,9 +934,22 @@ def main():
                 log(f"  ✅ Exit was due to '{exit_reason}' — no flip re-entry needed. Done for today.")
                 break
 
+            # Calculate loss % for this trade and add to cumulative
+            if entry_option_price_saved and entry_option_price_saved > 0:
+                exit_option_ltp = get_option_ltp(option_symbol, option_exchange)
+                if exit_option_ltp is not None:
+                    trade_loss_pct = ((exit_option_ltp - entry_option_price_saved) / entry_option_price_saved) * 100
+                    cumulative_loss_pct += trade_loss_pct
+                    log(f"  📉 Trade loss: {trade_loss_pct:.1f}% | Cumulative day loss: {cumulative_loss_pct:.1f}%")
+
             sl_count += 1
             log(f"")
-            log(f"  📊 Trade exited. SL/Exit count today: {sl_count}/{MAX_FLIP_ENTRIES}")
+            log(f"  📊 Trade exited (SL). Count: {sl_count}/{MAX_FLIP_ENTRIES} | Day Loss: {cumulative_loss_pct:.1f}%")
+
+            # Check if cumulative daily loss exceeds max allowed
+            if MAX_LOSS_PCT > 0 and cumulative_loss_pct <= -MAX_LOSS_PCT:
+                log(f"  🛑 DAILY MAX LOSS REACHED! Cumulative: {cumulative_loss_pct:.1f}% ≤ -{MAX_LOSS_PCT}%. No more entries.")
+                break
 
             if sl_count >= MAX_FLIP_ENTRIES:
                 log(f"  ❌ Max flip entries ({MAX_FLIP_ENTRIES}) reached. Done for today.")
