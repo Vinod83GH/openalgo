@@ -178,7 +178,7 @@ class WebhookConfig:
             strike_offset=os.environ.get("TV_STRIKE_OFFSET", "ITM1"),
             lots=lots,
             product=os.environ.get("TV_PRODUCT", "NRML"),
-            order_type=os.environ.get("TV_ORDER_TYPE", "MARKET").upper(),
+            order_type=os.environ.get("TV_ORDER_TYPE", "LIMIT").upper(),
         )
 
 
