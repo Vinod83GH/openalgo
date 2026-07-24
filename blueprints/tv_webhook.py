@@ -145,6 +145,7 @@ class SignalPayload:
     action: str  # "BUY" (only BUY supported initially)
     symbol: str  # Underlying symbol, e.g., "NIFTY"
     spot_price: float  # Current spot price from TradingView alert
+    option_type: str  # "CE" or "PE" — determines which option to resolve
 
 
 @dataclass
@@ -155,7 +156,7 @@ class WebhookConfig:
     strike_offset: str  # TV_STRIKE_OFFSET - e.g., "ITM1" (default: "ITM1")
     lots: int  # TV_LOTS - number of lots (default: 1)
     product: str  # TV_PRODUCT - product type (default: "MIS")
-    option_type: str  # TV_OPTION_TYPE - "CE" or "PE" (default: "CE")
+    order_type: str  # TV_ORDER_TYPE - "MARKET" or "LIMIT" (default: "MARKET")
 
     @classmethod
     def from_env(cls) -> "WebhookConfig":
@@ -176,8 +177,8 @@ class WebhookConfig:
             signal_cooldown=signal_cooldown,
             strike_offset=os.environ.get("TV_STRIKE_OFFSET", "ITM1"),
             lots=lots,
-            product=os.environ.get("TV_PRODUCT", "MIS"),
-            option_type=os.environ.get("TV_OPTION_TYPE", "CE"),
+            product=os.environ.get("TV_PRODUCT", "NRML"),
+            order_type=os.environ.get("TV_ORDER_TYPE", "MARKET").upper(),
         )
 
 
@@ -252,11 +253,20 @@ def webhook():
         return jsonify({"status": "error", "message": "Invalid API key"}), 401
 
     # Build signal payload
+    # option_type from payload (CE/PE), falls back to TV_OPTION_TYPE env var, then "CE"
+    option_type = data.get("option_type", os.environ.get("TV_OPTION_TYPE", "CE")).strip().upper()
+    if option_type not in ("CE", "PE"):
+        return (
+            jsonify({"status": "error", "message": "option_type must be 'CE' or 'PE'"}),
+            400,
+        )
+
     payload = SignalPayload(
         apikey=api_key,
         action=data["action"].upper(),
         symbol=data["symbol"],
         spot_price=spot_price,
+        option_type=option_type,
     )
 
     # Load webhook configuration
@@ -272,9 +282,13 @@ def webhook():
             "message": f"Cooldown active. Try again in {remaining:.0f} seconds"
         }), 429
 
-    # Option resolution - resolve ITM option contract via /api/v1/optionsymbol
+    # Set cooldown timestamp IMMEDIATELY to block concurrent/rapid signals
+    # This prevents duplicate processing even if downstream steps fail
+    _last_signal_time[api_key] = time.time()
+
+    # Option resolution - resolve option contract via /api/v1/optionsymbol
     option_symbol, option_exchange, lotsize = _resolve_option(
-        api_key, payload.symbol, config.option_type, config.strike_offset
+        api_key, payload.symbol, payload.option_type, config.strike_offset
     )
     if option_symbol is None:
         return jsonify({"status": "error", "message": "Option resolution failure"}), 502
@@ -283,23 +297,51 @@ def webhook():
     quantity = config.lots * lotsize
     logger.info(f"Resolved option: {option_symbol} on {option_exchange}, qty={quantity}")
 
-    # Order placement - place MARKET BUY via placesmartorder
+    # Order placement - place BUY order via placesmartorder
     try:
         from openalgo import api as openalgo_api
 
         host = os.environ.get("OPENALGO_HOST", "http://127.0.0.1:5000")
         client = openalgo_api(api_key=api_key, host=host)
 
-        order_response = client.placesmartorder(
-            strategy="TV-Signal",
-            symbol=option_symbol,
-            action="BUY",
-            exchange=option_exchange,
-            price_type="MARKET",
-            product=config.product,
-            quantity=quantity,
-            position_size=quantity,
-        )
+        # Determine price type and fetch LTP for LIMIT orders
+        price_type = config.order_type  # "MARKET" or "LIMIT"
+        order_params = {
+            "strategy": "TV-Signal",
+            "symbol": option_symbol,
+            "action": "BUY",
+            "exchange": option_exchange,
+            "price_type": price_type,
+            "product": config.product,
+            "quantity": quantity,
+            "position_size": quantity,
+        }
+
+        if price_type == "LIMIT":
+            # Fetch current option premium for limit price
+            try:
+                quotes_resp = client.quotes(symbol=option_symbol, exchange=option_exchange)
+                if quotes_resp and isinstance(quotes_resp, dict):
+                    if "ltp" in quotes_resp:
+                        limit_price = float(quotes_resp["ltp"])
+                    elif "data" in quotes_resp and isinstance(quotes_resp["data"], dict):
+                        limit_price = float(quotes_resp["data"].get("ltp", 0))
+                    else:
+                        limit_price = 0
+                else:
+                    limit_price = 0
+            except Exception as e:
+                logger.error(f"Failed to fetch LTP for LIMIT order: {e}")
+                limit_price = 0
+
+            if limit_price <= 0:
+                logger.error("Cannot place LIMIT order: LTP unavailable, falling back to MARKET")
+                order_params["price_type"] = "MARKET"
+            else:
+                order_params["price"] = limit_price
+                logger.info(f"LIMIT order price: {limit_price}")
+
+        order_response = client.placesmartorder(**order_params)
 
         if (
             not isinstance(order_response, dict)
@@ -355,7 +397,8 @@ def webhook():
             "TV_ORDER_ID": str(order_id),
             "TV_SL_PCT": os.environ.get("TV_SL_PCT", "15"),
             "TV_TRAIL_ACTIVATE_PCT": os.environ.get("TV_TRAIL_ACTIVATE_PCT", "20"),
-            "TV_TRAIL_STEP_PCT": os.environ.get("TV_TRAIL_STEP_PCT", "5"),
+            "TV_TRAIL_POINTS_MOVE": os.environ.get("TV_TRAIL_POINTS_MOVE", "5"),
+            "TV_TRAIL_POINTS_SL": os.environ.get("TV_TRAIL_POINTS_SL", "1"),
             "TV_EXIT_TIME": os.environ.get("TV_EXIT_TIME", "15:15"),
             "TV_POLL_INTERVAL": os.environ.get("TV_POLL_INTERVAL", "5"),
             "TV_PRODUCT": config.product,
@@ -426,9 +469,6 @@ def webhook():
         f"TV webhook received: action={payload.action}, symbol={payload.symbol}, "
         f"spot_price={payload.spot_price}"
     )
-
-    # Update cooldown timestamp on successful processing
-    _last_signal_time[api_key] = time.time()
 
     return jsonify({
         "status": "success",

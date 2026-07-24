@@ -16,7 +16,8 @@ Configuration (environment variables):
   TV_ORDER_ID              - Entry order ID
   TV_SL_PCT               - Initial stop-loss % (default: 15)
   TV_TRAIL_ACTIVATE_PCT   - Trail activation % (default: 20)
-  TV_TRAIL_STEP_PCT       - Trail step % (default: 5)
+  TV_TRAIL_POINTS_MOVE    - Points move to trigger SL advance (default: 10)
+  TV_TRAIL_POINTS_SL      - Points to advance SL per move (default: 1)
   TV_EXIT_TIME            - Forced exit time HH:MM (default: "15:15")
   TV_POLL_INTERVAL        - Polling interval in seconds (default: 5)
   TV_PRODUCT              - Product type (default: "MIS")
@@ -94,7 +95,8 @@ class MonitorConfig:
     # Trade management thresholds
     sl_pct: float            # TV_SL_PCT - initial SL % (default: 15)
     trail_activate_pct: float  # TV_TRAIL_ACTIVATE_PCT - trail activation % (default: 20)
-    trail_step_pct: float    # TV_TRAIL_STEP_PCT - trail step % (default: 5)
+    trail_points_move: float   # TV_TRAIL_POINTS_MOVE - points move to trigger SL advance (default: 10)
+    trail_points_sl: float     # TV_TRAIL_POINTS_SL - points to advance SL per move (default: 1)
     exit_time: str           # TV_EXIT_TIME - forced exit time (default: "15:15")
     poll_interval: int       # TV_POLL_INTERVAL - polling seconds (default: 5)
     product: str             # TV_PRODUCT - product type (default: "MIS")
@@ -116,7 +118,10 @@ class MonitorConfig:
         # Trade management thresholds with defaults
         sl_pct = _parse_float("TV_SL_PCT", 15.0)
         trail_activate_pct = _parse_float("TV_TRAIL_ACTIVATE_PCT", 20.0)
-        trail_step_pct = _parse_float("TV_TRAIL_STEP_PCT", 5.0)
+        # trail_points_move = _parse_float("TV_TRAIL_POINTS_MOVE", 10.0)
+        # trail_points_sl = _parse_float("TV_TRAIL_POINTS_SL", 1.0)
+        trail_points_move = 5
+        trail_points_sl = 1
         exit_time = _parse_exit_time("TV_EXIT_TIME", "15:15")
         poll_interval = _parse_int("TV_POLL_INTERVAL", 5)
         product = os.getenv("TV_PRODUCT", "MIS")
@@ -133,7 +138,8 @@ class MonitorConfig:
             order_id=order_id,
             sl_pct=sl_pct,
             trail_activate_pct=trail_activate_pct,
-            trail_step_pct=trail_step_pct,
+            trail_points_move=trail_points_move,
+            trail_points_sl=trail_points_sl,
             exit_time=exit_time,
             poll_interval=poll_interval,
             product=product,
@@ -153,7 +159,8 @@ class MonitorConfig:
         log(f"  Order ID        : {self.order_id}")
         log(f"  SL %            : {self.sl_pct}")
         log(f"  Trail Activate %: {self.trail_activate_pct}")
-        log(f"  Trail Step %    : {self.trail_step_pct}")
+        log(f"  Trail Move Pts  : {self.trail_points_move}")
+        log(f"  Trail SL Pts    : {self.trail_points_sl}")
         log(f"  Exit Time       : {self.exit_time}")
         log(f"  Poll Interval   : {self.poll_interval}s")
         log(f"  Product         : {self.product}")
@@ -177,21 +184,30 @@ def get_current_premium(client, symbol: str, exchange: str):
 
 
 def compute_sl_floor(entry_price: float, current_premium: float, sl_pct: float,
-                     trail_activate_pct: float, trail_step_pct: float) -> float:
+                     trail_activate_pct: float, trail_points_move: float,
+                     trail_points_sl: float, trail_activation_price: float = None) -> float:
     """
     Compute the current stop-loss floor based on profit level.
 
     - Below trail activation: SL floor = entry_price * (1 - sl_pct/100)
-    - At/above trail activation: SL floor = entry_price * (1 + steps * trail_step_pct/100)
-      where steps = floor((profit_pct - trail_activate_pct) / trail_step_pct)
+    - At/above trail activation: SL floor moves up by trail_points_sl for every
+      trail_points_move points above the activation price.
+      SL floor = activation_price + floor((current - activation_price) / trail_points_move) * trail_points_sl
+    
+    Note: The caller must track the highest SL floor seen to enforce "only goes up" rule.
     """
     profit_pct = ((current_premium - entry_price) / entry_price) * 100
 
     if profit_pct < trail_activate_pct:
         return entry_price * (1 - sl_pct / 100)
     else:
-        steps_above = math.floor((profit_pct - trail_activate_pct) / trail_step_pct)
-        return entry_price * (1 + steps_above * trail_step_pct / 100)
+        # Use activation price (the price when trail first activated)
+        activation_price = trail_activation_price if trail_activation_price else entry_price * (1 + trail_activate_pct / 100)
+        points_above = current_premium - activation_price
+        if points_above < 0:
+            points_above = 0
+        steps = math.floor(points_above / trail_points_move)
+        return activation_price + (steps * trail_points_sl)
 
 
 def place_exit_order(client, config: MonitorConfig, reason: str, current_premium: float = None) -> bool:
@@ -275,6 +291,7 @@ def main():
 
     last_sl_floor = None
     trail_activated = False
+    trail_activation_price = None
 
     while position_open:
         # Check time-based exit
@@ -296,31 +313,40 @@ def main():
         # Compute profit percentage
         profit_pct = ((current_premium - config.entry_price) / config.entry_price) * 100
 
+        # Track trail activation
+        if profit_pct >= config.trail_activate_pct and not trail_activated:
+            trail_activated = True
+            trail_activation_price = current_premium
+            log(f"🔄 TRAIL ACTIVATED! Profit {profit_pct:.2f}% >= {config.trail_activate_pct}%")
+            log(f"  Activation price: {trail_activation_price:.2f}")
+            log(f"  Trail rule: SL moves up {config.trail_points_sl} pts for every {config.trail_points_move} pts rise")
+
         # SL floor computation
         sl_floor = compute_sl_floor(
             config.entry_price, current_premium,
-            config.sl_pct, config.trail_activate_pct, config.trail_step_pct
+            config.sl_pct, config.trail_activate_pct,
+            config.trail_points_move, config.trail_points_sl,
+            trail_activation_price
         )
 
-        # Track SL level changes and trail activation
+        # Enforce "SL only goes up" rule
+        if last_sl_floor is not None and sl_floor < last_sl_floor:
+            sl_floor = last_sl_floor
+
+        # Track SL level changes
         if last_sl_floor is None:
             last_sl_floor = sl_floor
             log(f"Initial SL floor: {sl_floor:.2f}")
 
-        if profit_pct >= config.trail_activate_pct and not trail_activated:
-            trail_activated = True
-            log(f"🔄 TRAIL ACTIVATED! Profit {profit_pct:.2f}% >= {config.trail_activate_pct}%")
-            log(f"  SL floor moved to: {sl_floor:.2f}")
-
-        if sl_floor != last_sl_floor:
+        if sl_floor > last_sl_floor:
             log(f"📈 SL floor updated: {last_sl_floor:.2f} → {sl_floor:.2f}")
             last_sl_floor = sl_floor
 
-        log(f"LTP: {current_premium:.2f} | Profit: {profit_pct:.2f}% | SL: {sl_floor:.2f}")
+        log(f"LTP: {current_premium:.2f} | Profit: {profit_pct:.2f}% | SL: {last_sl_floor:.2f}")
 
         # Check if SL hit
-        if current_premium <= sl_floor:
-            log(f"🛑 STOP-LOSS HIT! LTP {current_premium:.2f} <= SL floor {sl_floor:.2f}")
+        if current_premium <= last_sl_floor:
+            log(f"🛑 STOP-LOSS HIT! LTP {current_premium:.2f} <= SL floor {last_sl_floor:.2f}")
             log(f"  Profit at exit: {profit_pct:.2f}%")
             place_exit_order(client, config, "Stop-loss hit", current_premium)
             position_open = False
