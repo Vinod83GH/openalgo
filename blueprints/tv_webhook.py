@@ -342,6 +342,8 @@ def webhook():
             else:
                 order_params["price"] = limit_price
                 logger.info(f"LIMIT order price: {limit_price}")
+        else:
+            order_params["market_protection"] = -1
 
         order_response = client.placesmartorder(**order_params)
 
