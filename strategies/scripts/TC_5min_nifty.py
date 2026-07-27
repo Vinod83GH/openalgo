@@ -365,25 +365,47 @@ def get_first_candle():
                 time.sleep(3)
                 continue
 
-            # Find the candle starting at ENTRY_START time
-            # 5-min candles are indexed by their open time
-            target_time = datetime.now().replace(
-                hour=ENTRY_START_H, minute=ENTRY_START_M, second=0, microsecond=0
-            )
+            # Find the candle for the ENTRY_START time slot
+            # The candle opens at ENTRY_START (e.g., 11:20) and closes at ENTRY_START+5 (11:25)
+            # Different brokers/APIs may index candles by open OR close time
+            # So we search for both ENTRY_START_H:ENTRY_START_M and the close time
+            candle_open_h = ENTRY_START_H
+            candle_open_m = ENTRY_START_M
+            candle_close_h_search = ENTRY_START_H
+            candle_close_m_search = ENTRY_START_M + 5
+            if candle_close_m_search >= 60:
+                candle_close_h_search += 1
+                candle_close_m_search -= 60
 
-            # Try to find the exact candle matching our start time
             candle = None
+            matched_time = None
             for idx in today_data.index:
                 candle_dt = idx
                 if hasattr(idx, 'hour'):
-                    if candle_dt.hour == ENTRY_START_H and candle_dt.minute == ENTRY_START_M:
+                    # Match by open time (most common)
+                    if candle_dt.hour == candle_open_h and candle_dt.minute == candle_open_m:
                         candle = today_data.loc[idx]
+                        matched_time = f"{candle_dt.hour:02d}:{candle_dt.minute:02d}"
+                        break
+                    # Also try matching by close time (some APIs index by close)
+                    if candle_dt.hour == candle_close_h_search and candle_dt.minute == candle_close_m_search:
+                        candle = today_data.loc[idx]
+                        matched_time = f"{candle_dt.hour:02d}:{candle_dt.minute:02d} (close-indexed)"
                         break
 
-            # Fallback: use the first candle if exact match not found
+            if candle is not None:
+                log(f"  ✅ Found candle at index time: {matched_time}")
+
+            # No fallback — if candle not found, abort
             if candle is None:
-                candle = today_data.iloc[0]
-                log(f"  ⚠️ Exact 5-min candle at {ENTRY_START} not found, using first available candle")
+                available_times = []
+                for idx in today_data.index[:20]:
+                    if hasattr(idx, 'strftime'):
+                        available_times.append(idx.strftime('%H:%M'))
+                log(f"  ❌ CANDLE NOT FOUND at {ENTRY_START_H:02d}:{ENTRY_START_M:02d}!")
+                log(f"  Available candle times: {available_times}")
+                log(f"  Aborting strategy.")
+                return False
 
             first_candle_high = round(float(candle["high"]), 2)
             first_candle_low = round(float(candle["low"]), 2)

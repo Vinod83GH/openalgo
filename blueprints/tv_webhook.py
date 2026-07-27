@@ -5,11 +5,9 @@ Features: Receive TradingView BUY alerts, resolve ITM option, place entry order,
 """
 
 import os
-import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import requests
 
@@ -17,15 +15,9 @@ from flask import Blueprint, jsonify, request
 
 from blueprints.python_strategy import (
     RUNNING_STRATEGIES,
-    PROCESS_LOCK,
-    create_subprocess_args,
-    get_ist_time,
-    get_python_executable,
-    LOGS_DIR,
 )
 from database.auth_db import get_auth_token_broker
 from utils.logging import get_logger
-from utils.strategy_env import build_subprocess_env
 
 logger = get_logger(__name__)
 
@@ -146,6 +138,7 @@ class SignalPayload:
     symbol: str  # Underlying symbol, e.g., "NIFTY"
     spot_price: float  # Current spot price from TradingView alert
     option_type: str  # "CE" or "PE" — determines which option to resolve
+    order_type: str  # "LIMIT" or "MARKET"
 
 
 @dataclass
@@ -260,6 +253,14 @@ def webhook():
             jsonify({"status": "error", "message": "option_type must be 'CE' or 'PE'"}),
             400,
         )
+    
+    # order_type from payload (LIMIT/MARKET)
+    order_type = data.get("order_type", "LIMIT").strip().upper()
+    if order_type not in ("LIMIT", "MARKET"):
+        return (
+            jsonify({"status": "error", "message": "option_type must be 'CE' or 'PE'"}),
+            400,
+        )
 
     payload = SignalPayload(
         apikey=api_key,
@@ -267,6 +268,7 @@ def webhook():
         symbol=data["symbol"],
         spot_price=spot_price,
         option_type=option_type,
+        order_type=order_type
     )
 
     # Load webhook configuration
@@ -305,7 +307,7 @@ def webhook():
         client = openalgo_api(api_key=api_key, host=host)
 
         # Determine price type and fetch LTP for LIMIT orders
-        price_type = config.order_type  # "MARKET" or "LIMIT"
+        price_type = payload.order_type  # "MARKET" or "LIMIT"
         order_params = {
             "strategy": "TV-Signal",
             "symbol": option_symbol,
@@ -386,84 +388,63 @@ def webhook():
     except Exception:
         entry_price = 0.0
 
-    # Spawn trade monitor subprocess
+    # Start the trade monitor strategy (must already exist on Strategy Page)
     try:
-        # Build environment variables for the monitor
-        monitor_env_vars = {
-            "TV_OPTION_SYMBOL": option_symbol,
-            "TV_OPTION_EXCHANGE": option_exchange,
-            "TV_ENTRY_PRICE": str(entry_price),
-            "TV_QUANTITY": str(quantity),
-            "TV_ORDER_ID": str(order_id),
-            "TV_SL_PCT": os.environ.get("TV_SL_PCT", "15"),
-            "TV_TRAIL_ACTIVATE_PCT": os.environ.get("TV_TRAIL_ACTIVATE_PCT", "20"),
-            "TV_TRAIL_POINTS_MOVE": os.environ.get("TV_TRAIL_POINTS_MOVE", "5"),
-            "TV_TRAIL_POINTS_SL": os.environ.get("TV_TRAIL_POINTS_SL", "1"),
-            "TV_EXIT_TIME": os.environ.get("TV_EXIT_TIME", "15:15"),
-            "TV_POLL_INTERVAL": os.environ.get("TV_POLL_INTERVAL", "5"),
-            "TV_PRODUCT": config.product,
-        }
+        from blueprints.python_strategy import (
+            STRATEGY_CONFIGS,
+            start_strategy_process,
+            save_configs,
+        )
 
-        # Build merged environment (auto-injects OPENALGO_APIKEY and OPENALGO_HOST)
-        merged_env = build_subprocess_env(monitor_env_vars)
+        # Find the tv_trade_monitor strategy by file name
+        monitor_strategy_id = None
+        for sid, sconfig in STRATEGY_CONFIGS.items():
+            if "tv_trade_monitor" in sconfig.get("file_path", ""):
+                monitor_strategy_id = sid
+                break
 
-        # Ensure OPENALGO_APIKEY is set to the caller's API key
-        merged_env["OPENALGO_APIKEY"] = api_key
-        if "OPENALGO_HOST" not in merged_env:
-            merged_env["OPENALGO_HOST"] = os.environ.get("OPENALGO_HOST", "http://127.0.0.1:5000")
+        if not monitor_strategy_id:
+            logger.error("TV Monitor strategy not found on Strategy Page. Create it first.")
+            return jsonify({"status": "error", "message": "TV Monitor strategy not found. Create tv_trade_monitor.py on Strategy Page first."}), 500
 
-        # Create log file with IST timestamp
-        ist_now = get_ist_time()
-        log_file = LOGS_DIR / f"tv_monitor_{ist_now.strftime('%Y%m%d_%H%M%S')}_IST.log"
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-
-        log_handle = open(log_file, "w", encoding="utf-8", buffering=1)
-        log_handle.write(f"=== TV Monitor Started at {ist_now.strftime('%Y-%m-%d %H:%M:%S IST')} ===\n")
-        log_handle.write(f"=== Symbol: {option_symbol} | Qty: {quantity} | Entry: {entry_price} ===\n\n")
-        log_handle.flush()
-
-        # Build subprocess command
-        monitor_script = Path(__file__).parent.parent / "strategies" / "scripts" / "tv_trade_monitor.py"
-        if not monitor_script.exists():
-            log_handle.close()
-            logger.error(f"Monitor script not found: {monitor_script}")
-            return jsonify({"status": "error", "message": "Monitor script not found"}), 500
-
-        # Get platform-specific subprocess args
-        subprocess_args = create_subprocess_args()
-        subprocess_args["stdout"] = log_handle
-        subprocess_args["stderr"] = subprocess.STDOUT
-        subprocess_args["env"] = merged_env
-        subprocess_args["cwd"] = str(Path.cwd())
-
-        cmd = [get_python_executable(), "-u", str(monitor_script.absolute())]
-
-        process = subprocess.Popen(cmd, **subprocess_args)
-
-        logger.info(f"TV Monitor spawned: PID={process.pid}, symbol={option_symbol}")
-
-        # Register in RUNNING_STRATEGIES for Strategy Page visibility
-        strategy_id = f"tv_monitor_{ist_now.strftime('%Y%m%d_%H%M%S')}"
-        with PROCESS_LOCK:
-            RUNNING_STRATEGIES[strategy_id] = {
-                "process": process,
-                "pid": process.pid,
-                "started_at": ist_now,
-                "log_file": str(log_file),
-                "log_handle": log_handle,
+        # Check if already running
+        if monitor_strategy_id in RUNNING_STRATEGIES:
+            logger.warning(f"TV Monitor '{monitor_strategy_id}' is already running, skipping spawn")
+        else:
+            # Inject trade-specific env vars into the strategy config
+            trade_env_vars = {
+                "TV_OPTION_SYMBOL": option_symbol,
+                "TV_OPTION_EXCHANGE": option_exchange,
+                "TV_ENTRY_PRICE": str(entry_price),
+                "TV_QUANTITY": str(quantity),
+                "TV_ORDER_ID": str(order_id),
+                "TV_SL_PCT": os.environ.get("TV_SL_PCT", "15"),
+                "TV_TRAIL_ACTIVATE_PCT": os.environ.get("TV_TRAIL_ACTIVATE_PCT", "20"),
+                "TV_TRAIL_POINTS_MOVE": os.environ.get("TV_TRAIL_POINTS_MOVE", "5"),
+                "TV_EXIT_TIME": os.environ.get("TV_EXIT_TIME", "15:15"),
+                "TV_POLL_INTERVAL": os.environ.get("TV_POLL_INTERVAL", "5"),
+                "TV_PRODUCT": config.product,
             }
 
-        logger.info(f"TV Monitor registered as '{strategy_id}' in RUNNING_STRATEGIES")
+            # Merge with existing env vars on the strategy (preserves any user-set vars)
+            existing_env = STRATEGY_CONFIGS[monitor_strategy_id].get("env_vars", {})
+            if not isinstance(existing_env, dict):
+                existing_env = {}
+            existing_env.update(trade_env_vars)
+            STRATEGY_CONFIGS[monitor_strategy_id]["env_vars"] = existing_env
+            save_configs()
 
-    except FileNotFoundError as e:
-        logger.error(f"Monitor spawn failed (file not found): {e}")
-        return jsonify({"status": "error", "message": "Monitor script not found"}), 500
-    except PermissionError as e:
-        logger.error(f"Monitor spawn failed (permission): {e}")
-        return jsonify({"status": "error", "message": "Permission error spawning monitor"}), 500
+            # Start the strategy using the standard mechanism
+            success, message = start_strategy_process(monitor_strategy_id)
+            if success:
+                logger.info(f"TV Monitor started: {monitor_strategy_id} — {message}")
+            else:
+                logger.error(f"TV Monitor start failed: {message}")
+                return jsonify({"status": "error", "message": f"Monitor start failed: {message}"}), 500
+
     except Exception as e:
-        logger.error(f"Monitor spawn failed: {e}")
-        return jsonify({"status": "error", "message": f"Monitor spawn failure: {str(e)}"}), 500
+        logger.error(f"Monitor start error: {e}")
+        return jsonify({"status": "error", "message": f"Monitor start failure: {str(e)}"}), 500
 
     logger.info(
         f"TV webhook received: action={payload.action}, symbol={payload.symbol}, "
