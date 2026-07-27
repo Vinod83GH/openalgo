@@ -121,8 +121,9 @@ EXCHANGE = os.getenv("STRATEGY_EXCHANGE", "NFO")
 TARGET_PCT = float(os.getenv("STRATEGY_TARGET_PCT", "0"))
 ORDER_TYPE = os.getenv("STRATEGY_ORDER_TYPE", "MARKET")
 RETRACEMENT_BUFFER = float(os.getenv("STRATEGY_RETRACEMENT_BUFFER", "2"))
-MAX_LOSS_PCT = float(os.getenv("STRATEGY_MAX_LOSS_PCT", "15"))  # Max loss % on option premium before forced exit. 0 = disabled.
+MAX_LOSS_PCT = float(os.getenv("STRATEGY_MAX_LOSS_PCT", "10"))  # Max loss % on option premium before forced exit. 0 = disabled.
 MAX_FLIP_ENTRIES = int(os.getenv("STRATEGY_MAX_FLIP_ENTRIES", "3"))  # Max flip re-entries after SL hit (default: 3)
+TRAIL_GAP = float(os.getenv("STRATEGY_TRAIL_GAP", "5"))  # Trailing SL: points below high watermark after target hit. 0 = disabled (exit at target).
 
 # Derived
 STRATEGY_NAME = f"TC5minCandle-{SYMBOL}"
@@ -788,6 +789,52 @@ def check_candle_sl(latest_close, candle_time, profit_pct):
 
 
 
+def trail_after_target(activation_premium):
+    """
+    Trailing SL after profit target is hit.
+    SL = highest_premium - TRAIL_GAP (never below activation_premium).
+    SL only moves up. Exit when premium drops to or below SL.
+    
+    Returns exit reason string, or None if time exit triggers first.
+    """
+    highest_premium = activation_premium
+    trail_sl = activation_premium  # SL starts at activation price
+
+    log(f"  🔄 TRAILING MODE ACTIVATED | Activation: {activation_premium:.2f} | Gap: {TRAIL_GAP} pts")
+
+    while True:
+        if is_past_time(EXIT_H, EXIT_M):
+            place_exit(f"Exit time {EXIT_TIME} (trailing)")
+            return "time"
+
+        time.sleep(5)  # Poll every 5 seconds for trailing
+
+        current_ltp = get_option_ltp(option_symbol, option_exchange)
+        if current_ltp is None:
+            continue
+
+        # Update high watermark
+        if current_ltp > highest_premium:
+            highest_premium = current_ltp
+
+        # Compute new SL: highest - gap, but never below activation price
+        new_sl = max(highest_premium - TRAIL_GAP, activation_premium)
+
+        # SL only goes up
+        if new_sl > trail_sl:
+            log(f"  📈 Trail SL updated: {trail_sl:.2f} → {new_sl:.2f} (HWM: {highest_premium:.2f})")
+            trail_sl = new_sl
+
+        profit_pct = ((current_ltp - entry_option_price_saved) / entry_option_price_saved) * 100
+        log(f"  Trail | LTP: {current_ltp:.2f} | HWM: {highest_premium:.2f} | SL: {trail_sl:.2f} | P&L: {profit_pct:.1f}%")
+
+        # Check if SL hit
+        if current_ltp <= trail_sl:
+            log(f"  🛑 TRAIL SL HIT! LTP {current_ltp:.2f} <= SL {trail_sl:.2f}")
+            place_exit(f"Trail SL hit (LTP={current_ltp:.2f}, SL={trail_sl:.2f}, P&L={profit_pct:.1f}%)")
+            return "trail_sl"
+
+
 def monitor_stop_loss():
     """Monitor candle-based SL, profit target, max loss, and exit time (5-min candles).
     
@@ -824,9 +871,16 @@ def monitor_stop_loss():
 
         # Check profit target
         if TARGET_PCT > 0 and profit_pct >= TARGET_PCT:
-            log(f"  🎯 PROFIT TARGET HIT! Option LTP={current_option_ltp}, Entry={entry_option_price_saved}, Profit={profit_pct:.1f}% ≥ {TARGET_PCT}%")
-            place_exit(f"Profit Target {profit_pct:.1f}% (target={TARGET_PCT}%)")
-            return "profit"
+            if TRAIL_GAP > 0:
+                # Switch to trailing mode instead of exiting
+                log(f"  🎯 TARGET HIT! Profit={profit_pct:.1f}% ≥ {TARGET_PCT}% → switching to trailing SL (gap={TRAIL_GAP} pts)")
+                trail_result = trail_after_target(current_option_ltp)
+                return trail_result if trail_result else "profit"
+            else:
+                # No trailing configured — exit immediately at target
+                log(f"  🎯 PROFIT TARGET HIT! Option LTP={current_option_ltp}, Entry={entry_option_price_saved}, Profit={profit_pct:.1f}% ≥ {TARGET_PCT}%")
+                place_exit(f"Profit Target {profit_pct:.1f}% (target={TARGET_PCT}%)")
+                return "profit"
 
         # Check max loss
         if MAX_LOSS_PCT > 0 and profit_pct <= -MAX_LOSS_PCT:
