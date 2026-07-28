@@ -111,13 +111,14 @@ class MonitorConfig:
         # Required entry details (no defaults — must be provided by parent process)
         option_symbol = os.getenv("TV_OPTION_SYMBOL", "")
         option_exchange = os.getenv("TV_OPTION_EXCHANGE", "NFO")
+        order_type = os.getenv("TV_ORDER_TYPE", "LIMIT")
         entry_price = _parse_float("TV_ENTRY_PRICE", 0.0)
         quantity = _parse_int("TV_QUANTITY", 0)
         order_id = os.getenv("TV_ORDER_ID", "")
 
         # Trade management thresholds with defaults
-        sl_pct = _parse_float("TV_SL_PCT", 15.0)
-        trail_activate_pct = _parse_float("TV_TRAIL_ACTIVATE_PCT", 20.0)
+        sl_pct = _parse_float("TV_SL_PCT", 10.0)
+        trail_activate_pct = _parse_float("TV_TRAIL_ACTIVATE_PCT", 10.0)
         # trail_points_move = _parse_float("TV_TRAIL_POINTS_MOVE", 10.0)
         # trail_points_sl = _parse_float("TV_TRAIL_POINTS_SL", 1.0)
         trail_points_move = 5
@@ -132,6 +133,7 @@ class MonitorConfig:
 
         return cls(
             option_symbol=option_symbol,
+            order_type=order_type,
             option_exchange=option_exchange,
             entry_price=entry_price,
             quantity=quantity,
@@ -230,7 +232,7 @@ def place_exit_order(client, config: MonitorConfig, reason: str, current_premium
                 symbol=config.option_symbol,
                 action="SELL",
                 exchange=config.option_exchange,
-                price_type="MARKET",
+                price_type=config.order_type,
                 product=config.product,
                 quantity=config.quantity,
                 position_size=0,

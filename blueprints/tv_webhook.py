@@ -420,12 +420,13 @@ def webhook():
                 "TV_ENTRY_PRICE": str(entry_price),
                 "TV_QUANTITY": str(quantity),
                 "TV_ORDER_ID": str(order_id),
-                "TV_SL_PCT": os.environ.get("TV_SL_PCT", "15"),
-                "TV_TRAIL_ACTIVATE_PCT": os.environ.get("TV_TRAIL_ACTIVATE_PCT", "20"),
+                "TV_SL_PCT": os.environ.get("TV_SL_PCT", "10"),
+                "TV_TRAIL_ACTIVATE_PCT": os.environ.get("TV_TRAIL_ACTIVATE_PCT", "10"),
                 "TV_TRAIL_POINTS_MOVE": os.environ.get("TV_TRAIL_POINTS_MOVE", "5"),
                 "TV_EXIT_TIME": os.environ.get("TV_EXIT_TIME", "15:15"),
                 "TV_POLL_INTERVAL": os.environ.get("TV_POLL_INTERVAL", "5"),
                 "TV_PRODUCT": config.product,
+                "TV_ORDER_TYPE": config.order_type
             }
 
             # Merge with existing env vars on the strategy (preserves any user-set vars)
