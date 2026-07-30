@@ -426,7 +426,7 @@ def webhook():
                 "TV_EXIT_TIME": os.environ.get("TV_EXIT_TIME", "15:15"),
                 "TV_POLL_INTERVAL": os.environ.get("TV_POLL_INTERVAL", "5"),
                 "TV_PRODUCT": config.product,
-                "TV_ORDER_TYPE": config.order_type
+                "TV_ORDER_TYPE": payload.order_type
             }
 
             # Merge with existing env vars on the strategy (preserves any user-set vars)
