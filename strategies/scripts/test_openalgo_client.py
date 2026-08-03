@@ -168,6 +168,43 @@ def test_place_buy_order():
     return False, f"Unexpected response: {str(response)[:200]}"
 
 
+def test_place_buy_order():
+    """Test placing a BUY smart order. Uses minimal quantity."""
+    # Use a known symbol for testing — NIFTY option or configured option
+    test_sym = TEST_OPTION_SYMBOL if TEST_OPTION_SYMBOL else TEST_SYMBOL
+    test_exch = TEST_OPTION_EXCHANGE if TEST_OPTION_SYMBOL else TEST_EXCHANGE
+
+    order_params = {
+        "strategy": TEST_STRATEGY_NAME,
+        "symbol": test_sym,
+        "action": "BUY",
+        "exchange": test_exch,
+        "price_type": "MARKET",
+        "product": TEST_PRODUCT,
+        "quantity": TEST_QUANTITY,
+        "market_protection": "-1"
+    }
+
+    log(f"  Placing BUY order: {test_sym} on {test_exch} qty={TEST_QUANTITY}")
+    response = client.placesmartorder(**order_params)
+    log(f"  Response: {response}")
+
+    if response is None:
+        return False, "placesmartorder() returned None"
+
+    if isinstance(response, dict):
+        status = response.get("status")
+        if status == "success":
+            order_id = response.get("orderid", "unknown")
+            return True, f"BUY order placed successfully. OrderID: {order_id}, Mode: {response.get('mode', 'unknown')}"
+        else:
+            return False, f"Order failed: {response.get('message', str(response))}"
+
+    return False, f"Unexpected response: {str(response)[:200]}"
+
+
+
+
 # ============================================================
 # TEST 4: Place SELL Exit Order (Smart Order)
 # ============================================================
