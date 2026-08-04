@@ -1,8 +1,10 @@
 import type {
+  DatetimeConfigUpdate,
   EnvironmentVariables,
   LogContent,
   LogFile,
   MasterContractStatus,
+  PositionalState,
   PythonStrategy,
   PythonStrategyContent,
   ScheduleConfig,
@@ -212,6 +214,40 @@ export const pythonStrategyApi = {
   checkAndStartPending: async (): Promise<ApiResponse<{ started: number }>> => {
     const response =
       await webClient.post<ApiResponse<{ started: number }>>('/python/check-contracts')
+    return response.data
+  },
+
+  /**
+   * Get positional state for a strategy
+   */
+  getPositionalState: async (strategyId: string): Promise<PositionalState> => {
+    const response = await webClient.get<PositionalState>(
+      `/python/strategy/${strategyId}/state`
+    )
+    return response.data
+  },
+
+  /**
+   * Exit position for a strategy
+   */
+  exitPosition: async (strategyId: string): Promise<ApiResponse<void>> => {
+    const response = await webClient.post<ApiResponse<void>>(
+      `/python/strategy/${strategyId}/state/exit`
+    )
+    return response.data
+  },
+
+  /**
+   * Update datetime configuration for a strategy
+   */
+  updateDatetimeConfig: async (
+    strategyId: string,
+    config: DatetimeConfigUpdate
+  ): Promise<ApiResponse<void>> => {
+    const response = await webClient.put<ApiResponse<void>>(
+      `/python/strategy/${strategyId}/config/datetime`,
+      config
+    )
     return response.data
   },
 }

@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time as time_module
 from datetime import date, datetime, time
 from pathlib import Path
 
@@ -36,6 +37,7 @@ from flask import (
 from werkzeug.utils import secure_filename
 
 from database.market_calendar_db import get_market_hours_status, is_market_holiday, is_market_open
+from database.positional_state_db import get_all_strategies_with_state, load_state, save_state
 from utils.session import check_session_validity
 from utils.strategy_env import build_subprocess_env, validate_env_vars
 
@@ -86,6 +88,7 @@ def broadcast_status_update(strategy_id: str, status: str, message: str = None):
 # File paths - use Path for cross-platform compatibility
 STRATEGIES_DIR = Path("strategies") / "scripts"
 LOGS_DIR = Path("log") / "strategies"  # Using existing log folder
+STATE_DIR = Path("strategies") / "state"  # State directory for positional strategy fallback files
 CONFIG_FILE = Path("strategies") / "strategy_configs.json"
 
 # Detect operating system
@@ -185,10 +188,11 @@ def verify_strategy_ownership(strategy_id, user_id, return_config=False):
 
 def ensure_directories():
     """Ensure all required directories exist"""
-    global STRATEGIES_DIR, LOGS_DIR
+    global STRATEGIES_DIR, LOGS_DIR, STATE_DIR
     try:
         STRATEGIES_DIR.mkdir(parents=True, exist_ok=True)
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
         logger.debug(f"Directories initialized on {OS_TYPE}")
     except PermissionError as e:
         # If we can't create directories, check if they exist
@@ -201,8 +205,10 @@ def ensure_directories():
             temp_base = Path(tempfile.gettempdir()) / "openalgo"
             STRATEGIES_DIR = temp_base / "strategies" / "scripts"
             LOGS_DIR = temp_base / "log" / "strategies"
+            STATE_DIR = temp_base / "strategies" / "state"
             STRATEGIES_DIR.mkdir(parents=True, exist_ok=True)
             LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
             logger.warning(f"Using temporary directories due to permission issues: {temp_base}")
     except Exception as e:
         logger.exception(f"Failed to create directories: {e}")
@@ -407,6 +413,18 @@ def start_strategy_process(strategy_id):
                     logger.warning(f"Could not set execute permission: {e}")
                     # Continue anyway, Python can still run it
 
+        # Positional strategy setup: validate config and create state table before starting
+        if config.get("strategy_type") == "positional":
+            from services.positional_config_validator import validate_positional_config
+            env_vars = config.get("env_vars", {})
+            is_valid, error = validate_positional_config(env_vars)
+            if not is_valid:
+                return False, f"Positional config validation failed: {error}"
+
+            from database.positional_state_db import create_strategy_table
+            create_strategy_table(strategy_id)
+            schedule_positional_lifecycle(strategy_id)
+
         # Check if master contracts are ready before starting strategy
         contracts_ready, contract_message = check_master_contract_ready()
         if not contracts_ready:
@@ -570,6 +588,11 @@ def start_strategy_process(strategy_id):
 
 def stop_strategy_process(strategy_id):
     """Stop a running strategy process - cross-platform implementation"""
+    # For positional strategies, use suspend (saves state, no exit orders)
+    config = STRATEGY_CONFIGS.get(strategy_id, {})
+    if config.get("strategy_type") == "positional":
+        return suspend_positional_strategy(strategy_id)
+
     with PROCESS_LOCK:  # Thread-safe operation
         if strategy_id not in RUNNING_STRATEGIES:
             # Check if process is still running by PID
@@ -1293,6 +1316,353 @@ def cleanup_strategy_logs(strategy_id: str):
         logger.exception(f"Error cleaning up logs for strategy {strategy_id}: {e}")
 
 
+# ============================================================================
+# Positional Strategy Suspend / Resume / Fallback Import
+# ============================================================================
+
+
+def import_fallback_state(strategy_id: str) -> bool:
+    """Import a fallback state file into the database and delete the file.
+
+    When the strategy process cannot write state to the DB on SIGTERM (database unreachable),
+    it writes a fallback JSON file. On next startup, this function imports it into the DB.
+
+    Args:
+        strategy_id: The strategy identifier.
+
+    Returns:
+        True if a fallback file was found and imported, False otherwise.
+    """
+    fallback_path = STATE_DIR / f"{strategy_id}_fallback.json"
+
+    if not fallback_path.exists():
+        return False
+
+    try:
+        with open(fallback_path, "r", encoding="utf-8") as f:
+            state_data = json.load(f)
+
+        if not isinstance(state_data, dict) or not state_data:
+            logger.warning(
+                f"Fallback state file for {strategy_id} is empty or invalid, skipping import"
+            )
+            fallback_path.unlink(missing_ok=True)
+            return False
+
+        # Extract schema_version from the state data (default to 1 if not present)
+        schema_version = 1
+        if "schema_version" in state_data:
+            try:
+                schema_version = int(json.loads(state_data["schema_version"]))
+            except (ValueError, TypeError, json.JSONDecodeError):
+                schema_version = 1
+
+        # Save to DB
+        from database.positional_state_db import create_strategy_table, save_state
+
+        create_strategy_table(strategy_id)
+        success = save_state(strategy_id, state_data, schema_version)
+
+        if success:
+            # Delete the fallback file after successful import
+            fallback_path.unlink(missing_ok=True)
+            logger.info(
+                f"Imported fallback state file for strategy {strategy_id} into DB and deleted file"
+            )
+            return True
+        else:
+            logger.error(
+                f"Failed to import fallback state for {strategy_id} into DB — file retained"
+            )
+            return False
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Fallback state file for {strategy_id} has invalid JSON: {e}")
+        return False
+    except Exception as e:
+        logger.exception(f"Error importing fallback state for {strategy_id}: {e}")
+        return False
+
+
+def suspend_positional_strategy(strategy_id: str, timeout: int = 10) -> tuple[bool, str]:
+    """Suspend a running positional strategy by sending SIGTERM and waiting for graceful exit.
+
+    The strategy process's SIGTERM handler (from Task 5.1) is responsible for saving state to DB.
+    This function:
+    1. Sends SIGTERM to the process
+    2. Waits up to `timeout` seconds for the process to exit gracefully
+    3. If not exited: force-kills, sets status "suspended_stale", logs warning
+    4. If exited cleanly: sets status "suspended"
+
+    Args:
+        strategy_id: The strategy identifier.
+        timeout: Seconds to wait for graceful exit (default 10 for SIGTERM, pass 60 for market close).
+
+    Returns:
+        Tuple of (success: bool, message: str).
+    """
+    with PROCESS_LOCK:
+        if strategy_id not in RUNNING_STRATEGIES:
+            # Check if strategy is in configs but not running
+            if strategy_id in STRATEGY_CONFIGS:
+                config = STRATEGY_CONFIGS[strategy_id]
+                # Already not running — just set status to suspended if it has persisted state
+                if config.get("is_running"):
+                    # Config says running but no process tracked — stale state
+                    config["is_running"] = False
+                    config["pid"] = None
+                    config["positional_status"] = "suspended_stale"
+                    config["last_stopped"] = get_ist_time().isoformat()
+                    save_configs()
+                    broadcast_status_update(strategy_id, "suspended_stale", "Process not found")
+                    return True, "Strategy process not found — marked as suspended_stale"
+                else:
+                    return True, "Strategy is already not running"
+            return False, "Strategy not found in configurations"
+
+        strategy_info = RUNNING_STRATEGIES[strategy_id]
+        process = strategy_info["process"]
+        pid = strategy_info["pid"]
+
+        ist_now = get_ist_time()
+        logger.info(f"Suspending positional strategy {strategy_id} (PID {pid}), timeout={timeout}s")
+
+        try:
+            # Send SIGTERM for graceful shutdown (process saves state in its SIGTERM handler)
+            if isinstance(process, subprocess.Popen):
+                if IS_WINDOWS:
+                    # Windows doesn't have SIGTERM in the same way — use terminate()
+                    process.terminate()
+                else:
+                    # Unix: send SIGTERM to process group if possible
+                    try:
+                        os.killpg(os.getpgid(pid), signal.SIGTERM)
+                    except OSError:
+                        process.terminate()
+            elif hasattr(process, "terminate"):
+                process.terminate()
+            else:
+                terminate_process_cross_platform(pid)
+
+            # Wait for graceful exit
+            try:
+                if isinstance(process, subprocess.Popen):
+                    process.wait(timeout=timeout)
+                elif hasattr(process, "wait"):
+                    process.wait(timeout=timeout)
+                else:
+                    # Fallback: poll for process exit
+                    elapsed = 0
+                    while elapsed < timeout:
+                        if not check_process_status(pid):
+                            break
+                        time_module.sleep(0.5)
+                        elapsed += 0.5
+                    else:
+                        raise subprocess.TimeoutExpired(cmd="strategy", timeout=timeout)
+
+                # Process exited gracefully within timeout
+                logger.info(
+                    f"Strategy {strategy_id} (PID {pid}) exited gracefully after SIGTERM"
+                )
+                final_status = "suspended"
+
+            except (subprocess.TimeoutExpired, psutil.TimeoutExpired):
+                # Process didn't exit within timeout — force kill
+                logger.warning(
+                    f"Strategy {strategy_id} (PID {pid}) did not exit within {timeout}s "
+                    f"— force-killing. State may be stale."
+                )
+
+                # Force kill
+                if isinstance(process, subprocess.Popen):
+                    if IS_WINDOWS:
+                        subprocess.run(
+                            ["taskkill", "/F", "/T", "/PID", str(pid)],
+                            capture_output=True,
+                            check=False,
+                        )
+                    else:
+                        try:
+                            os.killpg(os.getpgid(pid), signal.SIGKILL)
+                        except OSError:
+                            process.kill()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        pass
+                elif hasattr(process, "kill"):
+                    try:
+                        process.kill()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                else:
+                    terminate_process_cross_platform(pid)
+
+                # Set status based on timeout value
+                if timeout >= 60:
+                    # Market close timeout — save last captured state, set "suspended"
+                    final_status = "suspended"
+                    logger.warning(
+                        f"Strategy {strategy_id} force-terminated at market close (60s timeout)"
+                    )
+                else:
+                    # SIGTERM timeout (10s) — state may be stale
+                    final_status = "suspended_stale"
+
+        except (ProcessLookupError, psutil.NoSuchProcess):
+            # Process already dead
+            logger.info(f"Strategy {strategy_id} process already exited")
+            final_status = "suspended"
+        except Exception as e:
+            logger.exception(f"Error during suspend of strategy {strategy_id}: {e}")
+            final_status = "suspended_stale"
+
+        # Close log file handle safely
+        close_log_handle_safely(strategy_info)
+
+        # Remove from running strategies
+        del RUNNING_STRATEGIES[strategy_id]
+
+        # Update config
+        STRATEGY_CONFIGS[strategy_id]["is_running"] = False
+        STRATEGY_CONFIGS[strategy_id]["pid"] = None
+        STRATEGY_CONFIGS[strategy_id]["last_stopped"] = ist_now.isoformat()
+        STRATEGY_CONFIGS[strategy_id]["positional_status"] = final_status
+        save_configs()
+
+        # Broadcast status update
+        status_msg = f"Suspended at {ist_now.strftime('%H:%M:%S IST')}"
+        if final_status == "suspended_stale":
+            status_msg = f"Suspended (stale) at {ist_now.strftime('%H:%M:%S IST')} — state may be outdated"
+        broadcast_status_update(strategy_id, final_status, status_msg)
+
+        logger.info(f"Strategy {strategy_id} suspend complete — status: {final_status}")
+        return True, f"Strategy suspended with status '{final_status}'"
+
+
+def resume_positional_strategy(strategy_id: str) -> tuple[bool, str]:
+    """Resume a suspended positional strategy by loading persisted state and starting the process.
+
+    Loads state from the Positional_State_DB, injects it into environment variables for the
+    subprocess, then starts the strategy process using the existing infrastructure.
+
+    Also checks for and imports any fallback state files before loading.
+
+    Args:
+        strategy_id: The strategy identifier.
+
+    Returns:
+        Tuple of (success: bool, message: str).
+    """
+    # Import fallback state if present (before loading from DB)
+    import_fallback_state(strategy_id)
+
+    # Load state from DB
+    state_records = load_state(strategy_id)
+    if not state_records:
+        logger.warning(f"No persisted state found for strategy {strategy_id} — cannot resume")
+        return False, "No persisted state found for strategy — cannot resume"
+
+    # Check if strategy config exists
+    config = STRATEGY_CONFIGS.get(strategy_id)
+    if not config:
+        logger.error(f"Strategy {strategy_id} has state but no config — cannot resume")
+        return False, "Strategy configuration not found"
+
+    # Check if already running
+    if strategy_id in RUNNING_STRATEGIES:
+        return False, "Strategy is already running"
+
+    # Inject state into environment variables for the subprocess
+    # The strategy process reads these on startup to restore its state
+    if "env_vars" not in config:
+        config["env_vars"] = {}
+
+    # Inject the persisted state as a JSON-encoded env var
+    config["env_vars"]["POSITIONAL_RESTORED_STATE"] = json.dumps(state_records)
+    save_configs()
+
+    logger.info(
+        f"Resuming positional strategy {strategy_id} with {len(state_records)} state keys"
+    )
+
+    # Start the strategy process using existing infrastructure
+    success, message = start_strategy_process(strategy_id)
+
+    if success:
+        # Update positional status to running
+        STRATEGY_CONFIGS[strategy_id]["positional_status"] = "running"
+        save_configs()
+        broadcast_status_update(strategy_id, "running", f"Resumed: {message}")
+        logger.info(f"Strategy {strategy_id} resumed successfully: {message}")
+    else:
+        # Resume failed — set error status, do NOT exit positions
+        STRATEGY_CONFIGS[strategy_id]["positional_status"] = "error"
+        STRATEGY_CONFIGS[strategy_id]["is_error"] = True
+        STRATEGY_CONFIGS[strategy_id]["error_message"] = f"Resume failed: {message}"
+        STRATEGY_CONFIGS[strategy_id]["error_time"] = get_ist_time().isoformat()
+        save_configs()
+        broadcast_status_update(strategy_id, "error", f"Resume failed: {message}")
+        logger.error(f"Failed to resume strategy {strategy_id}: {message}")
+
+    # Clean up the injected state from env_vars (not needed after process start)
+    config["env_vars"].pop("POSITIONAL_RESTORED_STATE", None)
+    save_configs()
+
+    return success, message
+
+
+def detect_suspended_strategies_on_startup():
+    """Detect strategies with persisted state but no running process and set status to 'suspended'.
+
+    Called during application startup to recover from unexpected shutdowns.
+    Also imports any fallback state files found in the state directory.
+    """
+    # Ensure state directory exists
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+    strategies_with_state = get_all_strategies_with_state()
+
+    if not strategies_with_state:
+        return
+
+    recovered_count = 0
+    for strategy_id in strategies_with_state:
+        # Import fallback file if present
+        import_fallback_state(strategy_id)
+
+        # Check if strategy has a config
+        if strategy_id not in STRATEGY_CONFIGS:
+            logger.debug(f"Strategy {strategy_id} has state but no config — orphaned table")
+            continue
+
+        config = STRATEGY_CONFIGS[strategy_id]
+
+        # Only handle positional strategies
+        if config.get("strategy_type") != "positional":
+            continue
+
+        # Check if process is actually running
+        pid = config.get("pid")
+        is_actually_running = pid and check_process_status(pid)
+
+        if not is_actually_running and strategy_id not in RUNNING_STRATEGIES:
+            # Persisted state + no running process → set to "suspended"
+            config["is_running"] = False
+            config["pid"] = None
+            config["positional_status"] = "suspended"
+            recovered_count += 1
+            logger.info(
+                f"Startup recovery: strategy {strategy_id} has persisted state "
+                f"but no running process — set to 'suspended'"
+            )
+
+    if recovered_count > 0:
+        save_configs()
+        logger.info(f"Startup recovery: set {recovered_count} positional strategies to 'suspended'")
+
+
 def schedule_strategy(strategy_id, start_time, stop_time=None, days=None):
     """
     Schedule a strategy to run at specific times (IST).
@@ -1369,6 +1739,219 @@ def unschedule_strategy(strategy_id):
         save_configs()
 
     logger.info(f"Unscheduled strategy {strategy_id}")
+
+
+# ==============================================================================
+# Positional Strategy Lifecycle Scheduling
+# ==============================================================================
+
+
+def schedule_positional_lifecycle(strategy_id: str) -> None:
+    """
+    Register APScheduler cron jobs for positional strategy daily lifecycle.
+
+    Adds two jobs:
+    - Resume job at 9:15 AM IST on weekdays (market open)
+    - Suspend job at 3:30 PM IST on weekdays (market close)
+
+    Args:
+        strategy_id: Unique identifier for the positional strategy.
+    """
+    resume_job_id = f"positional_resume_{strategy_id}"
+    suspend_job_id = f"positional_suspend_{strategy_id}"
+
+    # Remove existing lifecycle jobs if any
+    if SCHEDULER.get_job(resume_job_id):
+        SCHEDULER.remove_job(resume_job_id)
+    if SCHEDULER.get_job(suspend_job_id):
+        SCHEDULER.remove_job(suspend_job_id)
+
+    # Schedule resume at 9:15 AM IST on weekdays
+    SCHEDULER.add_job(
+        func=positional_resume_all,
+        trigger=CronTrigger(
+            hour=9, minute=15, day_of_week="mon,tue,wed,thu,fri", timezone=IST
+        ),
+        id=resume_job_id,
+        replace_existing=True,
+    )
+
+    # Schedule suspend at 3:30 PM IST on weekdays
+    SCHEDULER.add_job(
+        func=positional_suspend_all,
+        trigger=CronTrigger(
+            hour=15, minute=30, day_of_week="mon,tue,wed,thu,fri", timezone=IST
+        ),
+        id=suspend_job_id,
+        replace_existing=True,
+    )
+
+    logger.info(
+        f"Positional lifecycle scheduled for strategy '{strategy_id}': "
+        f"resume at 9:15 AM IST, suspend at 3:30 PM IST (weekdays)"
+    )
+
+
+def positional_resume_all() -> None:
+    """
+    Scheduled function that resumes all positional strategies at market open (9:15 AM IST).
+
+    Checks if today is a trading day (not a weekend or market holiday) before resuming.
+    On resume failure (corrupted state, broker issue), sets status to "error" and does NOT
+    exit any open positions.
+
+    Called by APScheduler at 9:15 AM IST on weekdays.
+    """
+    try:
+        # Check if today is a trading day — skip weekends and holidays
+        if not is_trading_day():
+            logger.info(
+                "Positional resume: Skipping — today is not a trading day "
+                "(weekend or market holiday)"
+            )
+            return
+
+        # Get all strategy IDs that have persisted state in the database
+        strategy_ids = get_all_strategies_with_state()
+        if not strategy_ids:
+            logger.debug("Positional resume: No strategies with persisted state found")
+            return
+
+        logger.info(
+            f"Positional resume: Attempting to resume {len(strategy_ids)} strategies"
+        )
+
+        resumed_count = 0
+        error_count = 0
+
+        for strategy_id in strategy_ids:
+            # Only resume strategies that are configured as positional
+            config = STRATEGY_CONFIGS.get(strategy_id)
+            if not config:
+                logger.warning(
+                    f"Positional resume: Strategy '{strategy_id}' has persisted state "
+                    f"but no config — skipping"
+                )
+                continue
+
+            if config.get("strategy_type") != "positional":
+                continue
+
+            # Skip strategies that are already running
+            if strategy_id in RUNNING_STRATEGIES:
+                logger.debug(
+                    f"Positional resume: Strategy '{strategy_id}' already running — skipping"
+                )
+                continue
+
+            # Skip strategies that are not in a resumable state
+            positional_status = config.get("positional_status")
+            if positional_status not in ("suspended", "suspended_stale", None):
+                logger.debug(
+                    f"Positional resume: Strategy '{strategy_id}' status is "
+                    f"'{positional_status}' — not resumable, skipping"
+                )
+                continue
+
+            try:
+                # Call resume function (implemented in Task 4.2)
+                success, message = resume_positional_strategy(strategy_id)
+                if success:
+                    resumed_count += 1
+                    logger.info(
+                        f"Positional resume: Strategy '{strategy_id}' resumed successfully"
+                    )
+                else:
+                    error_count += 1
+                    # Set status to "error" — do NOT exit positions
+                    STRATEGY_CONFIGS[strategy_id]["positional_status"] = "error"
+                    STRATEGY_CONFIGS[strategy_id]["error_message"] = message
+                    STRATEGY_CONFIGS[strategy_id]["error_time"] = datetime.now(IST).isoformat()
+                    logger.error(
+                        f"Positional resume: Strategy '{strategy_id}' failed — {message}"
+                    )
+            except Exception as e:
+                error_count += 1
+                # Set status to "error" — do NOT exit positions
+                STRATEGY_CONFIGS[strategy_id]["positional_status"] = "error"
+                STRATEGY_CONFIGS[strategy_id]["error_message"] = str(e)
+                STRATEGY_CONFIGS[strategy_id]["error_time"] = datetime.now(IST).isoformat()
+                logger.exception(
+                    f"Positional resume: Exception resuming strategy '{strategy_id}': {e}"
+                )
+
+        if resumed_count > 0 or error_count > 0:
+            save_configs()
+
+        logger.info(
+            f"Positional resume complete: {resumed_count} resumed, {error_count} errors"
+        )
+
+    except Exception as e:
+        logger.exception(f"Positional resume: Unexpected error in resume_all: {e}")
+
+
+def positional_suspend_all() -> None:
+    """
+    Scheduled function that suspends all positional strategies at market close (3:30 PM IST).
+
+    For each running positional strategy:
+    1. Saves current state to the Positional_State_DB
+    2. Stops the strategy process
+    3. Sets status to "suspended"
+
+    Does NOT exit any open positions — positions remain active overnight.
+    Called by APScheduler at 3:30 PM IST on weekdays.
+    """
+    try:
+        suspended_count = 0
+        error_count = 0
+
+        for strategy_id, config in list(STRATEGY_CONFIGS.items()):
+            # Only suspend positional strategies
+            if config.get("strategy_type") != "positional":
+                continue
+
+            # Only suspend strategies that are currently running
+            if strategy_id not in RUNNING_STRATEGIES:
+                continue
+
+            positional_status = config.get("positional_status")
+            if positional_status not in ("running", None):
+                logger.debug(
+                    f"Positional suspend: Strategy '{strategy_id}' status is "
+                    f"'{positional_status}' — not running, skipping"
+                )
+                continue
+
+            try:
+                # Call suspend function (implemented in Task 4.2)
+                success, message = suspend_positional_strategy(strategy_id)
+                if success:
+                    suspended_count += 1
+                    logger.info(
+                        f"Positional suspend: Strategy '{strategy_id}' suspended successfully"
+                    )
+                else:
+                    error_count += 1
+                    logger.error(
+                        f"Positional suspend: Strategy '{strategy_id}' failed — {message}"
+                    )
+            except Exception as e:
+                error_count += 1
+                logger.exception(
+                    f"Positional suspend: Exception suspending strategy '{strategy_id}': {e}"
+                )
+
+        if suspended_count > 0 or error_count > 0:
+            save_configs()
+
+        logger.info(
+            f"Positional suspend complete: {suspended_count} suspended, {error_count} errors"
+        )
+
+    except Exception as e:
+        logger.exception(f"Positional suspend: Unexpected error in suspend_all: {e}")
 
 
 @python_strategy_bp.route("/")
@@ -1809,12 +2392,19 @@ def delete_strategy(strategy_id):
     if not is_owner:
         return error_response
 
+    # Stop strategy if running (must be outside PROCESS_LOCK for positional strategies
+    # because suspend_positional_strategy acquires the lock internally)
+    if strategy_id in RUNNING_STRATEGIES or (
+        strategy_id in STRATEGY_CONFIGS and STRATEGY_CONFIGS[strategy_id].get("is_running")
+    ):
+        stop_strategy_process(strategy_id)
+
     with PROCESS_LOCK:  # Thread-safe operation
-        # Stop if running
-        if strategy_id in RUNNING_STRATEGIES or (
-            strategy_id in STRATEGY_CONFIGS and STRATEGY_CONFIGS[strategy_id].get("is_running")
-        ):
-            stop_strategy_process(strategy_id)
+        # Clean up positional state table if this is a positional strategy
+        config = STRATEGY_CONFIGS.get(strategy_id, {})
+        if config.get("strategy_type") == "positional":
+            from database.positional_state_db import delete_strategy_table
+            delete_strategy_table(strategy_id)
 
         # Unschedule if scheduled
         if STRATEGY_CONFIGS.get(strategy_id, {}).get("is_scheduled"):
@@ -2149,6 +2739,8 @@ def api_get_strategies():
                 "paused_message": config.get("paused_message"),
                 "process_id": config.get("process_id"),
                 "created_at": config.get("created_at"),
+                "strategy_type": config.get("strategy_type"),
+                "positional_status": config.get("positional_status"),
             }
         )
 
@@ -2591,16 +3183,335 @@ def save_env_vars(strategy_id):
     return jsonify({"status": "success", "message": "Environment variables saved"})
 
 
+# --- Positional Strategy State API ---
+
+
+@python_strategy_bp.route("/strategy/<strategy_id>/state", methods=["GET"])
+@check_session_validity
+def get_strategy_state(strategy_id):
+    """Get the current state of a positional strategy.
+
+    Returns live in-memory state when the strategy process is running,
+    last persisted state from DB when not running,
+    or a no_state response when no state exists.
+    """
+    user_id = session.get("user")
+    if not user_id:
+        return jsonify({"status": "error", "message": "Unauthorized"}), 403
+
+    # Verify ownership - returns 403 without revealing strategy existence
+    is_owner, result = verify_strategy_ownership(strategy_id, user_id)
+    if not is_owner:
+        # Always return 403 to avoid leaking strategy existence
+        return jsonify({"status": "error", "message": "Unauthorized access to strategy"}), 403
+
+    # Try to get live state from running process
+    state_data = None
+    is_live = False
+
+    if strategy_id in RUNNING_STRATEGIES:
+        # Strategy is running - try to get live state from DB (latest checkpoint)
+        raw_state = load_state(strategy_id)
+        if raw_state:
+            state_data = raw_state
+            is_live = True
+    else:
+        # Strategy not running - load last persisted state from DB
+        raw_state = load_state(strategy_id)
+        if raw_state:
+            state_data = raw_state
+
+    # No state exists for this strategy
+    if state_data is None:
+        return jsonify({"status": "no_state", "data": {}})
+
+    # Parse state fields from JSON-encoded values
+    try:
+        from services.positional_state_serializer import CURRENT_SCHEMA_VERSION, deserialize_state
+
+        strategy_state = deserialize_state(state_data, CURRENT_SCHEMA_VERSION)
+
+        # Determine position_status
+        if not strategy_state.entry_done:
+            position_status = "no_position"
+        elif strategy_state.entry_done and not strategy_state.exit_done:
+            position_status = "position_open"
+        else:
+            position_status = "position_closed"
+
+        # Build response data
+        response_data = {
+            "position_status": position_status,
+            "entry_price": strategy_state.entry_option_price_saved,
+            "entry_timestamp": strategy_state.timestamp,
+            "instrument_symbol": strategy_state.option_symbol,
+            "quantity": strategy_state.actual_quantity,
+            "last_updated": strategy_state.timestamp,
+            "high_watermark": strategy_state.high_watermark,
+            "trailing_active": strategy_state.trailing_active,
+        }
+
+        # Include unrealized_pnl only when position is open
+        if position_status == "position_open":
+            # unrealized_pnl would come from live LTP data if available
+            # For now, use high_watermark as an approximation indicator
+            if strategy_state.high_watermark and strategy_state.entry_option_price_saved:
+                unrealized_pnl = (
+                    (strategy_state.high_watermark - strategy_state.entry_option_price_saved)
+                    * (strategy_state.actual_quantity or 0)
+                )
+            else:
+                unrealized_pnl = 0.0
+            response_data["unrealized_pnl"] = round(unrealized_pnl, 2)
+
+        # Include entry_window from strategy config env_vars
+        config = STRATEGY_CONFIGS.get(strategy_id, {})
+        env_vars = config.get("env_vars", {})
+        entry_start = env_vars.get("STRATEGY_ENTRY_START_DATE_TIME")
+        entry_end = env_vars.get("STRATEGY_ENTRY_END_DATE_TIME")
+        exit_dt = env_vars.get("STRATEGY_EXIT_DATE_TIME")
+        if entry_start and entry_end and exit_dt:
+            response_data["entry_window"] = {
+                "start": entry_start,
+                "end": entry_end,
+                "exit_dt": exit_dt,
+            }
+        else:
+            response_data["entry_window"] = None
+
+        return jsonify({
+            "status": "ok",
+            "is_live": is_live,
+            "data": response_data,
+        })
+
+    except Exception as e:
+        logger.warning(f"Failed to deserialize state for strategy {strategy_id}: {e}")
+        # Return raw state keys as fallback for partially corrupted data
+        return jsonify({
+            "status": "ok",
+            "is_live": is_live,
+            "data": {
+                "position_status": "unknown",
+                "error": "State deserialization failed",
+            },
+        })
+
+
+@python_strategy_bp.route("/strategy/<strategy_id>/state/exit", methods=["POST"])
+@check_session_validity
+def trigger_manual_exit(strategy_id):
+    """Trigger a manual exit for an open positional strategy position.
+
+    Sets a flag/signal for the strategy process to trigger a position exit.
+    Strategy must be running and have an open position.
+    """
+    user_id = session.get("user")
+    if not user_id:
+        return jsonify({"status": "error", "message": "Unauthorized"}), 403
+
+    # Verify ownership - returns 403 without revealing strategy existence
+    is_owner, result = verify_strategy_ownership(strategy_id, user_id)
+    if not is_owner:
+        return jsonify({"status": "error", "message": "Unauthorized access to strategy"}), 403
+
+    # Check strategy is running
+    if strategy_id not in RUNNING_STRATEGIES:
+        return jsonify({
+            "status": "error",
+            "message": "Strategy is not running. Cannot trigger exit on a stopped strategy.",
+        }), 400
+
+    # Check the strategy has an open position
+    raw_state = load_state(strategy_id)
+    if not raw_state:
+        return jsonify({
+            "status": "error",
+            "message": "No state found for strategy. Cannot determine position status.",
+        }), 400
+
+    try:
+        import json as _json
+
+        entry_done = _json.loads(raw_state.get("entry_done", "false"))
+        exit_done = _json.loads(raw_state.get("exit_done", "false"))
+    except (ValueError, TypeError):
+        entry_done = False
+        exit_done = False
+
+    if not entry_done or exit_done:
+        return jsonify({
+            "status": "error",
+            "message": "No open position to exit.",
+        }), 400
+
+    # Signal the strategy process to exit by writing a manual_exit flag to the DB state
+    # The strategy process monitors this flag on each checkpoint cycle
+    try:
+        import json as _json
+
+        # Add a manual_exit_requested key to the state
+        raw_state["manual_exit_requested"] = _json.dumps(True)
+        raw_state["manual_exit_timestamp"] = _json.dumps(get_ist_time().isoformat())
+
+        from services.positional_state_serializer import CURRENT_SCHEMA_VERSION
+
+        success = save_state(strategy_id, raw_state, CURRENT_SCHEMA_VERSION)
+        if success:
+            logger.info(f"Manual exit requested for strategy {strategy_id} by user {user_id}")
+            return jsonify({
+                "status": "ok",
+                "message": "Manual exit signal sent. Strategy will exit position on next check cycle.",
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Failed to save exit signal to database.",
+            }), 500
+    except Exception as e:
+        logger.exception(f"Failed to trigger manual exit for strategy {strategy_id}: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to trigger exit: {str(e)}",
+        }), 500
+
+
+@python_strategy_bp.route("/strategy/<strategy_id>/config/datetime", methods=["PUT"])
+@check_session_validity
+def update_datetime_config(strategy_id):
+    """Update datetime configuration (entry start, entry end, exit) for a positional strategy.
+
+    Validates format, chronological ordering, and future constraint for exit_dt.
+    Returns 409 if strategy is running and entry dates are being modified (exit_dt alone is allowed).
+    """
+    import re
+
+    DATETIME_PATTERN = re.compile(r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01]) ([01]\d|2[0-3]):[0-5]\d$")
+
+    user_id = session.get("user")
+    if not user_id:
+        return jsonify({"status": "error", "message": "Session expired"}), 401
+
+    # Verify ownership
+    is_owner, result = verify_strategy_ownership(strategy_id, user_id, return_config=True)
+    if not is_owner:
+        return result
+
+    config = result
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"status": "error", "message": "No data provided"}), 400
+
+    entry_start_dt = data.get("entry_start_dt")
+    entry_end_dt = data.get("entry_end_dt")
+    exit_dt = data.get("exit_dt")
+
+    # At least one field must be provided
+    if not any([entry_start_dt, entry_end_dt, exit_dt]):
+        return jsonify({"status": "error", "message": "No datetime fields provided"}), 400
+
+    # Validate format for provided fields
+    for field_name, field_value in [("entry_start_dt", entry_start_dt), ("entry_end_dt", entry_end_dt), ("exit_dt", exit_dt)]:
+        if field_value is not None and not DATETIME_PATTERN.match(field_value):
+            return jsonify({
+                "status": "error",
+                "message": f"Invalid format for {field_name}. Expected YYYY-MM-DD HH:MM",
+            }), 400
+
+    # Check if strategy is running - restrict entry date changes
+    is_running = strategy_id in RUNNING_STRATEGIES
+    if is_running:
+        # Only exit_dt can be modified while running
+        if entry_start_dt is not None or entry_end_dt is not None:
+            return jsonify({
+                "status": "error",
+                "message": "Cannot modify datetime configuration while strategy is running",
+            }), 409
+
+    # Get current env_vars for comparison/ordering validation
+    env_vars = config.get("env_vars", {})
+    effective_start = entry_start_dt or env_vars.get("STRATEGY_ENTRY_START_DATE_TIME", "")
+    effective_end = entry_end_dt or env_vars.get("STRATEGY_ENTRY_END_DATE_TIME", "")
+    effective_exit = exit_dt or env_vars.get("STRATEGY_EXIT_DATE_TIME", "")
+
+    # Validate chronological ordering if we have enough values to compare
+    if effective_start and effective_end:
+        if effective_start >= effective_end:
+            return jsonify({
+                "status": "error",
+                "message": "Entry start datetime must be before entry end datetime",
+            }), 400
+
+    if effective_end and effective_exit:
+        if effective_end >= effective_exit:
+            return jsonify({
+                "status": "error",
+                "message": "Entry end datetime must be before exit datetime",
+            }), 400
+
+    if effective_start and effective_exit and not effective_end:
+        if effective_start >= effective_exit:
+            return jsonify({
+                "status": "error",
+                "message": "Entry start datetime must be before exit datetime",
+            }), 400
+
+    # Validate exit_dt is in the future
+    if exit_dt:
+        try:
+            exit_datetime = datetime.strptime(exit_dt, "%Y-%m-%d %H:%M")
+            exit_datetime_ist = IST.localize(exit_datetime)
+            now_ist = get_ist_time()
+            if exit_datetime_ist <= now_ist:
+                return jsonify({
+                    "status": "error",
+                    "message": "Exit datetime must be in the future",
+                }), 400
+        except ValueError:
+            return jsonify({
+                "status": "error",
+                "message": "Invalid exit datetime value",
+            }), 400
+
+    # Update env_vars
+    if "env_vars" not in STRATEGY_CONFIGS[strategy_id]:
+        STRATEGY_CONFIGS[strategy_id]["env_vars"] = {}
+
+    if entry_start_dt is not None:
+        STRATEGY_CONFIGS[strategy_id]["env_vars"]["STRATEGY_ENTRY_START_DATE_TIME"] = entry_start_dt
+    if entry_end_dt is not None:
+        STRATEGY_CONFIGS[strategy_id]["env_vars"]["STRATEGY_ENTRY_END_DATE_TIME"] = entry_end_dt
+    if exit_dt is not None:
+        STRATEGY_CONFIGS[strategy_id]["env_vars"]["STRATEGY_EXIT_DATE_TIME"] = exit_dt
+
+    save_configs()
+
+    return jsonify({"status": "success", "message": "Datetime configuration updated"})
+
+
 # Cleanup on shutdown
 def cleanup_on_exit():
     """Clean up all running processes on application exit"""
     logger.info("Cleaning up running strategies...")
-    with PROCESS_LOCK:
-        for strategy_id in list(RUNNING_STRATEGIES.keys()):
+
+    # Save state for all positional strategies first (no exit orders)
+    # Note: suspend_positional_strategy acquires PROCESS_LOCK internally
+    for sid, cfg in list(STRATEGY_CONFIGS.items()):
+        if cfg.get("strategy_type") == "positional" and sid in RUNNING_STRATEGIES:
             try:
-                stop_strategy_process(strategy_id)
-            except:
-                pass
+                suspend_positional_strategy(sid)
+            except Exception as e:
+                logger.error(f"Failed to save state for positional strategy {sid}: {e}")
+
+    # Stop remaining non-positional strategies
+    # Note: stop_strategy_process acquires PROCESS_LOCK internally for non-positional
+    for strategy_id in list(RUNNING_STRATEGIES.keys()):
+        try:
+            stop_strategy_process(strategy_id)
+        except:
+            pass
+
     logger.info("Cleanup complete")
 
 
@@ -2728,6 +3639,24 @@ def restore_strategy_states():
         )
     else:
         logger.debug("No strategies needed state restoration")
+
+    # --- Positional strategy startup recovery ---
+    # 1. Detect suspended strategies and import fallback files
+    detect_suspended_strategies_on_startup()
+
+    # 2. Schedule positional lifecycle for all strategies with state
+    strategies_with_state = get_all_strategies_with_state()
+    positional_scheduled = 0
+    for sid in strategies_with_state:
+        config = STRATEGY_CONFIGS.get(sid)
+        if config and config.get("strategy_type") == "positional":
+            schedule_positional_lifecycle(sid)
+            positional_scheduled += 1
+
+    if positional_scheduled > 0:
+        logger.info(
+            f"Positional startup recovery: scheduled lifecycle for {positional_scheduled} strategies"
+        )
 
 
 def check_and_start_pending_strategies():

@@ -39,8 +39,15 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import type { MasterContractStatus, PythonStrategy } from '@/types/python-strategy'
-import { SCHEDULE_DAYS, STATUS_COLORS, STATUS_LABELS } from '@/types/python-strategy'
+import type { MasterContractStatus, PositionalStatus, PythonStrategy } from '@/types/python-strategy'
+import {
+  POSITIONAL_STATUS_COLORS,
+  POSITIONAL_STATUS_LABELS,
+  POSITIONAL_STATUS_TOOLTIPS,
+  SCHEDULE_DAYS,
+  STATUS_COLORS,
+  STATUS_LABELS,
+} from '@/types/python-strategy'
 
 export default function PythonStrategyIndex() {
   const navigate = useNavigate()
@@ -239,6 +246,29 @@ export default function PythonStrategyIndex() {
     scheduled: strategies.filter((s) => s.is_scheduled).length,
   }
 
+  // Helper: determine badge color, label, and tooltip for a strategy
+  const getStatusBadgeInfo = (strategy: PythonStrategy) => {
+    const isPositional =
+      strategy.strategy_type === 'positional' && strategy.positional_status != null
+
+    if (isPositional) {
+      const ps = strategy.positional_status as PositionalStatus
+      return {
+        color: POSITIONAL_STATUS_COLORS[ps] || '',
+        label: POSITIONAL_STATUS_LABELS[ps] || strategy.positional_status,
+        tooltip: POSITIONAL_STATUS_TOOLTIPS[ps] || POSITIONAL_STATUS_LABELS[ps] || ps,
+        hasSpecialTooltip: ps === 'suspended_stale' || ps === 'requires_manual_review',
+      }
+    }
+
+    return {
+      color: STATUS_COLORS[strategy.status] || '',
+      label: STATUS_LABELS[strategy.status] || strategy.status,
+      tooltip: strategy.status_message || STATUS_LABELS[strategy.status],
+      hasSpecialTooltip: false,
+    }
+  }
+
   if (loading) {
     return (
       <div className="container mx-auto py-6 space-y-6">
@@ -366,11 +396,24 @@ export default function PythonStrategyIndex() {
         </Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 items-start">
-          {strategies.map((strategy) => (
-            <Card key={strategy.id} className="relative overflow-hidden flex flex-col">
+          {strategies.map((strategy) => {
+            const badgeInfo = getStatusBadgeInfo(strategy)
+            const isPositional =
+              strategy.strategy_type === 'positional' && strategy.positional_status != null
+
+            return (
+            <Card
+              key={strategy.id}
+              className={`relative overflow-hidden flex flex-col${isPositional ? ' cursor-pointer' : ''}`}
+              onClick={
+                isPositional
+                  ? () => navigate(`/python/${strategy.id}/state`)
+                  : undefined
+              }
+            >
               {/* Status bar */}
               <div
-                className={`absolute top-0 left-0 right-0 h-1 ${STATUS_COLORS[strategy.status]}`}
+                className={`absolute top-0 left-0 right-0 h-1 ${badgeInfo.color}`}
               />
 
               <CardHeader className="pb-3">
@@ -381,18 +424,24 @@ export default function PythonStrategyIndex() {
                       {strategy.file_name}
                     </CardDescription>
                   </div>
-                  <div className="flex items-center gap-1 shrink-0">
+                  <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
                     <Tooltip>
                       <TooltipTrigger>
                         <Badge
-                          variant={strategy.status === 'running' ? 'default' : 'secondary'}
-                          className={`${STATUS_COLORS[strategy.status] || ''} whitespace-nowrap`}
+                          variant={
+                            (isPositional
+                              ? strategy.positional_status === 'running'
+                              : strategy.status === 'running')
+                              ? 'default'
+                              : 'secondary'
+                          }
+                          className={`${badgeInfo.color} whitespace-nowrap`}
                         >
-                          {STATUS_LABELS[strategy.status] || strategy.status}
+                          {badgeInfo.label}
                         </Badge>
                       </TooltipTrigger>
                       <TooltipContent>
-                        {strategy.status_message || STATUS_LABELS[strategy.status]}
+                        {badgeInfo.tooltip}
                       </TooltipContent>
                     </Tooltip>
                     <DropdownMenu>
@@ -424,7 +473,7 @@ export default function PythonStrategyIndex() {
                 </div>
               </CardHeader>
 
-              <CardContent className="space-y-4 flex-1 flex flex-col">
+              <CardContent className="space-y-4 flex-1 flex flex-col" onClick={(e) => e.stopPropagation()}>
                 {/* Schedule Info - always show */}
                 <div className="text-sm p-2 rounded min-h-[52px] bg-blue-500/10 border border-blue-500/20">
                   <div className="flex items-center gap-2">
@@ -554,7 +603,8 @@ export default function PythonStrategyIndex() {
                 </div>
               </CardContent>
             </Card>
-          ))}
+            )
+          })}
         </div>
       )}
 

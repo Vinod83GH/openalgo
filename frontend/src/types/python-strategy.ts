@@ -1,5 +1,16 @@
 // Python Strategy Types
 
+// Positional strategy status type
+export type PositionalStatus =
+  | 'suspended'
+  | 'running'
+  | 'error'
+  | 'state_save_failed'
+  | 'requires_manual_review'
+  | 'entry_expired'
+  | 'completed'
+  | 'suspended_stale'
+
 export interface PythonStrategy {
   id: string
   name: string
@@ -18,6 +29,8 @@ export interface PythonStrategy {
   env_vars?: Record<string, string>
   created_at: string
   updated_at: string
+  strategy_type?: 'intraday' | 'positional'
+  positional_status?: PositionalStatus
 }
 
 export interface PythonStrategyContent {
@@ -88,4 +101,60 @@ export const STATUS_LABELS: Record<string, string> = {
   scheduled: 'Scheduled',
   paused: 'Paused',
   manually_stopped: 'Manual Stop',
+}
+
+// State API response type
+export interface PositionalState {
+  position_status: 'no_position' | 'position_open' | 'position_closed'
+  entry_price: number | null
+  entry_timestamp: string | null  // ISO 8601
+  instrument_symbol: string | null
+  quantity: number | null
+  unrealized_pnl: number | null
+  high_watermark: number | null
+  trailing_active: boolean
+  last_updated: string  // ISO 8601
+  is_live: boolean
+  entry_window: {
+    start: string  // YYYY-MM-DD HH:MM
+    end: string    // YYYY-MM-DD HH:MM
+    exit_dt: string  // YYYY-MM-DD HH:MM
+  } | null
+}
+
+// Datetime config update request
+export interface DatetimeConfigUpdate {
+  entry_start_dt?: string  // YYYY-MM-DD HH:MM
+  entry_end_dt?: string    // YYYY-MM-DD HH:MM
+  exit_dt?: string         // YYYY-MM-DD HH:MM
+}
+
+// Positional status colour mapping
+export const POSITIONAL_STATUS_COLORS: Record<PositionalStatus, string> = {
+  suspended: 'bg-amber-500',
+  running: 'bg-green-500',
+  error: 'bg-red-500',
+  state_save_failed: 'bg-red-500',
+  requires_manual_review: 'bg-red-500',
+  entry_expired: 'bg-orange-500',
+  completed: 'bg-blue-500',
+  suspended_stale: 'bg-amber-500',
+}
+
+// Positional status label mapping
+export const POSITIONAL_STATUS_LABELS: Record<PositionalStatus, string> = {
+  suspended: 'Suspended',
+  running: 'Running',
+  error: 'Error',
+  state_save_failed: 'State Save Failed',
+  requires_manual_review: 'Needs Review',
+  entry_expired: 'Entry Expired',
+  completed: 'Completed',
+  suspended_stale: 'Suspended (Stale)',
+}
+
+// Positional status tooltip mapping (only for statuses that need extra explanation)
+export const POSITIONAL_STATUS_TOOLTIPS: Partial<Record<PositionalStatus, string>> = {
+  suspended_stale: 'Last state save may be incomplete. Verify position manually.',
+  requires_manual_review: 'Manual intervention required. Check logs for details.',
 }
