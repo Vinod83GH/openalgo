@@ -15,6 +15,7 @@ import type { StrategyEnvVars } from '@/utils/strategy-env-validation'
 import {
   envVarsToFormState,
   formStateToEnvVars,
+  validateDatetimeFormat,
   validateLots,
   validateTimeFormat,
 } from '@/utils/strategy-env-validation'
@@ -105,6 +106,22 @@ export default function SchedulePythonStrategy() {
     const exitTimeError = validateTimeFormat(envState.STRATEGY_EXIT_TIME)
     if (exitTimeError) {
       newErrors.STRATEGY_EXIT_TIME = exitTimeError
+    }
+
+    // Validate positional datetime fields (if filled)
+    const entryStartDtError = validateDatetimeFormat(envState.STRATEGY_ENTRY_START_DATE_TIME)
+    if (entryStartDtError) {
+      newErrors.STRATEGY_ENTRY_START_DATE_TIME = entryStartDtError
+    }
+
+    const entryEndDtError = validateDatetimeFormat(envState.STRATEGY_ENTRY_END_DATE_TIME)
+    if (entryEndDtError) {
+      newErrors.STRATEGY_ENTRY_END_DATE_TIME = entryEndDtError
+    }
+
+    const exitDtError = validateDatetimeFormat(envState.STRATEGY_EXIT_DATE_TIME)
+    if (exitDtError) {
+      newErrors.STRATEGY_EXIT_DATE_TIME = exitDtError
     }
 
     if (Object.keys(newErrors).length > 0) {

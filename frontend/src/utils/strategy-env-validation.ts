@@ -16,6 +16,13 @@ export interface StrategyEnvVars {
   STRATEGY_EXCHANGE: string
   STRATEGY_TARGET_PCT: string
   STRATEGY_ORDER_TYPE: string
+  STRATEGY_ENTRY_START_DATE_TIME: string
+  STRATEGY_ENTRY_END_DATE_TIME: string
+  STRATEGY_EXIT_DATE_TIME: string
+  strategy_type: string
+  CANDLE_TIMEFRAME_MIN: string
+  TRAIL_GAP: string
+  MAX_FLIP_ENTRIES: string
 }
 
 /**
@@ -32,6 +39,13 @@ export const STRATEGY_FIELD_MAP: Record<string, string> = {
   exchange: 'STRATEGY_EXCHANGE',
   targetPct: 'STRATEGY_TARGET_PCT',
   orderType: 'STRATEGY_ORDER_TYPE',
+  entryStartDateTime: 'STRATEGY_ENTRY_START_DATE_TIME',
+  entryEndDateTime: 'STRATEGY_ENTRY_END_DATE_TIME',
+  exitDateTime: 'STRATEGY_EXIT_DATE_TIME',
+  strategyType: 'strategy_type',
+  candleTimeframe: 'CANDLE_TIMEFRAME_MIN',
+  trailGap: 'TRAIL_GAP',
+  maxFlipEntries: 'MAX_FLIP_ENTRIES',
 }
 
 /**
@@ -58,6 +72,20 @@ export function validateTimeFormat(value: string): string | null {
   const timeRegex = /^([01]\d|2[0-3]):([0-5]\d)$/
   if (!timeRegex.test(value)) {
     return 'Time must be in HH:MM format (00:00 - 23:59)'
+  }
+  return null
+}
+
+/**
+ * Validate a datetime field value in YYYY-MM-DD HH:MM format.
+ * Returns an error message string if invalid, or null if valid.
+ * Empty values are considered valid (field is optional).
+ */
+export function validateDatetimeFormat(value: string): string | null {
+  if (!value) return null // optional field
+  const datetimeRegex = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01]) ([01]\d|2[0-3]):([0-5]\d)$/
+  if (!datetimeRegex.test(value)) {
+    return 'Must be in YYYY-MM-DD HH:MM format'
   }
   return null
 }
@@ -93,5 +121,12 @@ export function envVarsToFormState(envVars: Record<string, string>): StrategyEnv
     STRATEGY_EXCHANGE: envVars['STRATEGY_EXCHANGE'] || '',
     STRATEGY_TARGET_PCT: envVars['STRATEGY_TARGET_PCT'] || '',
     STRATEGY_ORDER_TYPE: envVars['STRATEGY_ORDER_TYPE'] || '',
+    STRATEGY_ENTRY_START_DATE_TIME: envVars['STRATEGY_ENTRY_START_DATE_TIME'] || '',
+    STRATEGY_ENTRY_END_DATE_TIME: envVars['STRATEGY_ENTRY_END_DATE_TIME'] || '',
+    STRATEGY_EXIT_DATE_TIME: envVars['STRATEGY_EXIT_DATE_TIME'] || '',
+    strategy_type: envVars['strategy_type'] || 'intraday',
+    CANDLE_TIMEFRAME_MIN: envVars['CANDLE_TIMEFRAME_MIN'] || '15',
+    TRAIL_GAP: envVars['TRAIL_GAP'] || '',
+    MAX_FLIP_ENTRIES: envVars['MAX_FLIP_ENTRIES'] || '',
   }
 }
