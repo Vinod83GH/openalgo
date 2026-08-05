@@ -512,6 +512,10 @@ def start_strategy_process(strategy_id):
             if "OPENALGO_HOST" not in merged_env:
                 merged_env["OPENALGO_HOST"] = "http://127.0.0.1:5000"
 
+            # Auto-inject STRATEGY_ID for positional strategies
+            if "STRATEGY_ID" not in merged_env:
+                merged_env["STRATEGY_ID"] = strategy_id
+
             subprocess_args["env"] = merged_env
             if strategy_env_vars:
                 logger.info(f"Injecting env vars for {strategy_id}: {list(strategy_env_vars.keys())}")
