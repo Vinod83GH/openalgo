@@ -53,14 +53,14 @@ Write-Host "  Done" -ForegroundColor Green
 # STEP 6 - Set up persistent data directories
 Write-Host ""
 Write-Host "Step 6 - Setting up data directories..." -ForegroundColor Yellow
-Invoke-SSH "sudo mkdir -p /mnt/openalgo-data/{db,log,log/strategies,strategies/scripts,strategies/examples,keys} && sudo chown -R 1000:1000 /mnt/openalgo-data && sudo chmod -R 755 /mnt/openalgo-data && sudo chmod 700 /mnt/openalgo-data/keys"
+Invoke-SSH "sudo mkdir -p /mnt/openalgo-data/{db,log,log/strategies,strategies/scripts,strategies/state,strategies/examples,keys} && sudo touch /mnt/openalgo-data/strategies/strategy_configs.json && sudo chown -R 1000:1000 /mnt/openalgo-data && sudo chmod -R 755 /mnt/openalgo-data && sudo chmod 700 /mnt/openalgo-data/keys"
 Write-Host "  Done" -ForegroundColor Green
 
 # STEP 7 - Write production docker-compose.yaml
 Write-Host ""
 Write-Host "Step 7 - Writing production docker-compose.yaml..." -ForegroundColor Yellow
 
-$composeContent = "services:`n  openalgo:`n    image: openalgo:latest`n    build:`n      context: .`n      dockerfile: Dockerfile`n    container_name: openalgo-app`n    network_mode: host`n    volumes:`n      - /mnt/openalgo-data/db:/app/db`n      - /mnt/openalgo-data/log:/app/log`n      - /mnt/openalgo-data/strategies:/app/strategies`n      - /mnt/openalgo-data/keys:/app/keys`n      - $APP_DIR/.env:/app/.env:ro`n    restart: unless-stopped`n    healthcheck:`n      test: [""CMD"", ""python3"", ""-c"", ""import urllib.request; urllib.request.urlopen('http://localhost:5000/api/v1/ping')""]`n      interval: 30s`n      timeout: 10s`n      retries: 3`n      start_period: 60s"
+$composeContent = "services:`n  openalgo:`n    image: openalgo:latest`n    build:`n      context: .`n      dockerfile: Dockerfile`n    container_name: openalgo-app`n    network_mode: host`n    volumes:`n      - /mnt/openalgo-data/db:/app/db`n      - /mnt/openalgo-data/log:/app/log`n      - /mnt/openalgo-data/strategies/scripts:/app/strategies/scripts`n      - /mnt/openalgo-data/strategies/state:/app/strategies/state`n      - /mnt/openalgo-data/strategies/examples:/app/strategies/examples`n      - /mnt/openalgo-data/strategies/strategy_configs.json:/app/strategies/strategy_configs.json`n      - /mnt/openalgo-data/keys:/app/keys`n      - $APP_DIR/.env:/app/.env:ro`n    restart: unless-stopped`n    healthcheck:`n      test: [""CMD"", ""python3"", ""-c"", ""import urllib.request; urllib.request.urlopen('http://localhost:5000/api/v1/ping')""]`n      interval: 30s`n      timeout: 10s`n      retries: 3`n      start_period: 60s"
 $composeBytes = [System.Text.Encoding]::UTF8.GetBytes($composeContent)
 $composeB64 = [Convert]::ToBase64String($composeBytes)
 Invoke-SSH "echo $composeB64 | base64 -d > $APP_DIR/docker-compose.prod.yaml"
