@@ -592,10 +592,24 @@ def start_strategy_process(strategy_id):
 
 def stop_strategy_process(strategy_id):
     """Stop a running strategy process - cross-platform implementation"""
-    # For positional strategies, use suspend (saves state, no exit orders)
+    # For positional strategies, kill process and clear all persisted state
     config = STRATEGY_CONFIGS.get(strategy_id, {})
     if config.get("strategy_type") == "positional":
-        return suspend_positional_strategy(strategy_id)
+        # First suspend (kill process gracefully)
+        success, message = suspend_positional_strategy(strategy_id)
+        if success:
+            # Then permanently clear all persisted state from DB
+            try:
+                from database.positional_state_db import delete_strategy_table
+                delete_strategy_table(strategy_id)
+                logger.info(f"Cleared persisted state for positional strategy {strategy_id}")
+            except Exception as e:
+                logger.warning(f"Failed to clear state for {strategy_id}: {e}")
+            # Set status to "stopped" (not "suspended") — strategy won't auto-resume
+            STRATEGY_CONFIGS[strategy_id]["positional_status"] = None
+            STRATEGY_CONFIGS[strategy_id]["manually_stopped"] = True
+            save_configs()
+        return success, message
 
     with PROCESS_LOCK:  # Thread-safe operation
         if strategy_id not in RUNNING_STRATEGIES:
@@ -1008,6 +1022,14 @@ def scheduled_start_strategy(strategy_id: str):
         STRATEGY_CONFIGS[strategy_id].pop("paused_message", None)
 
     logger.info(f"All checks passed - proceeding to start strategy {strategy_id}")
+
+    # For positional strategies with persisted state, use resume to restore state
+    if config.get("strategy_type") == "positional":
+        state_records = load_state(strategy_id)
+        if state_records:
+            resume_positional_strategy(strategy_id)
+            return
+
     start_strategy_process(strategy_id)
 
 
@@ -2278,6 +2300,14 @@ def start_strategy(strategy_id):
 
     # Within schedule - start immediately
     initialize_with_app_context()
+
+    # For positional strategies with persisted state, use resume to restore state
+    if config.get("strategy_type") == "positional":
+        state_records = load_state(strategy_id)
+        if state_records:
+            success, message = resume_positional_strategy(strategy_id)
+            return jsonify({"status": "success" if success else "error", "message": message})
+
     success, message = start_strategy_process(strategy_id)
     return jsonify({"status": "success" if success else "error", "message": message})
 
