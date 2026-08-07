@@ -814,15 +814,33 @@ def check_candle_sl(latest_close, candle_time, profit_pct):
 def trail_after_target(activation_premium):
     """
     Trailing SL after profit target is hit.
-    SL = highest_premium - TRAIL_GAP (never below activation_premium).
-    SL only moves up. Exit when premium drops to or below SL.
+    
+    Logic:
+    - Initial TSL = entry_price + half of profit points (locks in 50% of profit at activation)
+    - TSL moves up 1:1 with price (every 1 point gain = 1 point TSL increase)
+    - TSL never moves down (ratchet)
+    - Exit when LTP drops to or below TSL
+    
+    Example (entry=100, target=10%, activation at 110):
+      - Initial TSL = 100 + (110-100)/2 = 105 (locks 50% of profit)
+      - Price 112 → TSL = 105 + (112-110) = 107
+      - Price 115 → TSL = 105 + (115-110) = 110
+      - Price drops to 111 → TSL stays 110 (never moves down)
+      - Price 120 → TSL = 105 + (120-110) = 115
+      - Price drops to 115 → TSL stays 115 → EXIT (LTP <= TSL)
     
     Returns exit reason string, or None if time exit triggers first.
     """
+    # Calculate initial TSL: lock in half the profit at activation
+    profit_points_at_activation = activation_premium - entry_option_price_saved
+    initial_tsl = entry_option_price_saved + (profit_points_at_activation / 2)
+    
+    trail_sl = initial_tsl
     highest_premium = activation_premium
-    trail_sl = activation_premium  # SL starts at activation price
 
-    log(f"  🔄 TRAILING MODE ACTIVATED | Activation: {activation_premium:.2f} | Gap: {TRAIL_GAP} pts")
+    log(f"  🔄 TRAILING MODE ACTIVATED | Entry: {entry_option_price_saved:.2f} | "
+        f"Activation: {activation_premium:.2f} | Initial TSL: {trail_sl:.2f} "
+        f"(locking {profit_points_at_activation/2:.1f} pts = 50% of profit)")
 
     while True:
         if is_past_time(EXIT_H, EXIT_M):
@@ -839,10 +857,11 @@ def trail_after_target(activation_premium):
         if current_ltp > highest_premium:
             highest_premium = current_ltp
 
-        # Compute new SL: highest - gap, but never below activation price
-        new_sl = max(highest_premium - TRAIL_GAP, activation_premium)
+        # TSL = initial_tsl + (highest_premium - activation_premium)
+        # This gives 1:1 movement: for every 1 point above activation, TSL moves 1 point up
+        new_sl = initial_tsl + (highest_premium - activation_premium)
 
-        # SL only goes up
+        # TSL only goes up (ratchet — never moves down)
         if new_sl > trail_sl:
             log(f"  📈 Trail SL updated: {trail_sl:.2f} → {new_sl:.2f} (HWM: {highest_premium:.2f})")
             trail_sl = new_sl
@@ -857,8 +876,12 @@ def trail_after_target(activation_premium):
             return "trail_sl"
 
 
-def monitor_stop_loss():
+def monitor_stop_loss(cumulative_loss_pct_so_far=0.0):
     """Monitor candle-based SL, profit target, max loss, and exit time (5-min candles).
+    
+    Args:
+        cumulative_loss_pct_so_far: Cumulative loss % from previous trades today.
+            Used to enforce daily max loss across all trades (not just current trade).
     
     Returns:
         "sl" — candle SL hit or max loss % hit
@@ -904,11 +927,19 @@ def monitor_stop_loss():
                 place_exit(f"Profit Target {profit_pct:.1f}% (target={TARGET_PCT}%)")
                 return "profit"
 
-        # Check max loss
+        # Check max loss (individual trade AND cumulative across all trades today)
         if MAX_LOSS_PCT > 0 and profit_pct <= -MAX_LOSS_PCT:
             log(f"  🛑 MAX LOSS HIT! Option LTP={current_option_ltp}, Entry={entry_option_price_saved}, Loss={profit_pct:.1f}% ≤ -{MAX_LOSS_PCT}%")
             place_exit(f"Max Loss {profit_pct:.1f}% (limit=-{MAX_LOSS_PCT}%)")
             return "sl"
+
+        # Check cumulative daily loss (current trade loss + previous trades)
+        if MAX_LOSS_PCT > 0:
+            total_loss_today = cumulative_loss_pct_so_far + profit_pct
+            if total_loss_today <= -MAX_LOSS_PCT:
+                log(f"  🛑 CUMULATIVE DAILY MAX LOSS! Current trade: {profit_pct:.1f}% + Previous: {cumulative_loss_pct_so_far:.1f}% = Total: {total_loss_today:.1f}% ≤ -{MAX_LOSS_PCT}%")
+                place_exit(f"Cumulative Daily Max Loss {total_loss_today:.1f}% (limit=-{MAX_LOSS_PCT}%)")
+                return "sl"
 
         # Fetch latest 5-min candle close for SL check
         candles = get_latest_5min_candles()
@@ -1002,7 +1033,7 @@ def main():
 
     while True:
         if entry_done and not exit_done:
-            exit_reason = monitor_stop_loss()
+            exit_reason = monitor_stop_loss(cumulative_loss_pct)
 
         if exit_done:
             # Only attempt flip re-entry on SL-type exits (candle SL or max loss)
