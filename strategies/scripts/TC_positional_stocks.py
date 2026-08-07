@@ -155,6 +155,7 @@ TRAIL_GAP = float(os.getenv("STRATEGY_TRAIL_GAP", "0"))
 ENTRY_START_DT_STR = os.getenv("STRATEGY_ENTRY_START_DATE_TIME", "")
 ENTRY_END_DT_STR = os.getenv("STRATEGY_ENTRY_END_DATE_TIME", "")
 EXIT_DT_STR = os.getenv("STRATEGY_EXIT_DATE_TIME", "")
+STOCK_OPTIONS_EXPIRY_DATE = os.getenv("STOCK_OPTIONS_EXPIRY_DATE", "2026-08-25")
 
 # Candle timeframe (minutes)
 CANDLE_TIMEFRAME_MIN = int(os.getenv("CANDLE_TIMEFRAME_MIN", "15"))
@@ -310,6 +311,42 @@ def restore_state_from(state):
 
 
 # ============================================================
+# EXPIRY CALCULATION — Monthly last Thursday for stocks
+# ============================================================
+
+def get_nearest_expiry():
+    """Calculate the nearest monthly expiry date in DDMMMYY format.
+
+    Stock options use monthly last Thursday expiry.
+    If today is past this month's last Thursday, use next month's.
+    """
+    import calendar as _cal
+    today = datetime.now().date()
+    year, month = today.year, today.month
+
+    # Find last Thursday of current month
+    last_day = _cal.monthrange(year, month)[1]
+    last_date = today.replace(day=last_day)
+
+    while last_date.weekday() != 3:  # Thursday = 3
+        last_date -= timedelta(days=1)
+
+    # If today is past this month's last Thursday, use next month
+    if today > last_date:
+        if month == 12:
+            year += 1
+            month = 1
+        else:
+            month += 1
+        last_day = _cal.monthrange(year, month)[1]
+        last_date = datetime(year, month, last_day).date()
+        while last_date.weekday() != 3:  # Thursday = 3
+            last_date -= timedelta(days=1)
+
+    return last_date.strftime("%d%b%y").upper()
+
+
+# ============================================================
 # HELPER FUNCTIONS
 # ============================================================
 
@@ -372,19 +409,21 @@ def check_manual_exit_requested() -> bool:
 def resolve_option_symbol(option_type, spot_ltp):
     """Use the /api/v1/optionsymbol API to resolve the correct option contract.
     
-    The API automatically resolves the nearest available expiry from the 
-    master contract database — no need to calculate expiry manually.
+    Calculates the nearest monthly expiry (last Thursday) and passes it
+    to the API along with strike offset and option type.
     """
     url = f"{HOST}/api/v1/optionsymbol"
+    expiry_date = STOCK_OPTIONS_EXPIRY_DATE
     payload = {
         "apikey": API_KEY,
         "underlying": SYMBOL,
         "exchange": SPOT_EXCHANGE,
+        "expiry_date": expiry_date,
         "offset": STRIKE_SELECTION,
         "option_type": option_type,
     }
 
-    log(f"Resolving option: {SYMBOL} {option_type} {STRIKE_SELECTION} (LTP={spot_ltp})...")
+    log(f"Resolving option: {SYMBOL} {option_type} {STRIKE_SELECTION} expiry={expiry_date} (LTP={spot_ltp})...")
 
     try:
         resp = requests.post(url, json=payload, timeout=10)
