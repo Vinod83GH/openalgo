@@ -19,6 +19,7 @@ export interface StrategyEnvVars {
   STRATEGY_ENTRY_START_DATE_TIME: string
   STRATEGY_ENTRY_END_DATE_TIME: string
   STRATEGY_EXIT_DATE_TIME: string
+  STOCK_MONTHLY_EXPIRY: string
   strategy_type: string
   CANDLE_TIMEFRAME_MIN: string
   TRAIL_GAP: string
@@ -42,6 +43,7 @@ export const STRATEGY_FIELD_MAP: Record<string, string> = {
   entryStartDateTime: 'STRATEGY_ENTRY_START_DATE_TIME',
   entryEndDateTime: 'STRATEGY_ENTRY_END_DATE_TIME',
   exitDateTime: 'STRATEGY_EXIT_DATE_TIME',
+  expiryDate: 'STOCK_MONTHLY_EXPIRY',
   strategyType: 'strategy_type',
   candleTimeframe: 'CANDLE_TIMEFRAME_MIN',
   trailGap: 'TRAIL_GAP',
@@ -91,6 +93,20 @@ export function validateDatetimeFormat(value: string): string | null {
 }
 
 /**
+ * Validate an expiry date field value in DD-MMM-YYYY format (e.g. 29-SEP-2026).
+ * Returns an error message string if invalid, or null if valid.
+ * Empty values are considered valid (field is optional).
+ */
+export function validateExpiryDateFormat(value: string): string | null {
+  if (!value) return null // optional field
+  const expiryRegex = /^(0[1-9]|[12]\d|3[01])-(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)-\d{4}$/i
+  if (!expiryRegex.test(value)) {
+    return 'Must be in DD-MMM-YYYY format (e.g. 29-SEP-2026)'
+  }
+  return null
+}
+
+/**
  * Convert form state (StrategyEnvVars) to an env_vars dictionary for the API.
  * Filters out entries with empty or whitespace-only values.
  */
@@ -124,6 +140,7 @@ export function envVarsToFormState(envVars: Record<string, string>): StrategyEnv
     STRATEGY_ENTRY_START_DATE_TIME: envVars['STRATEGY_ENTRY_START_DATE_TIME'] || '',
     STRATEGY_ENTRY_END_DATE_TIME: envVars['STRATEGY_ENTRY_END_DATE_TIME'] || '',
     STRATEGY_EXIT_DATE_TIME: envVars['STRATEGY_EXIT_DATE_TIME'] || '',
+    STOCK_MONTHLY_EXPIRY: envVars['STOCK_MONTHLY_EXPIRY'] || '',
     strategy_type: envVars['strategy_type'] || 'intraday',
     CANDLE_TIMEFRAME_MIN: envVars['CANDLE_TIMEFRAME_MIN'] || '15',
     TRAIL_GAP: envVars['TRAIL_GAP'] || '',

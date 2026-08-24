@@ -151,6 +151,25 @@ export default function StrategyParametersSection({
         )}
       </div>
 
+      {/* Expiry Date */}
+      <div className="space-y-2">
+        <Label htmlFor="strategy-expiry-date">Expiry Date (DD-MMM-YYYY)</Label>
+        <Input
+          id="strategy-expiry-date"
+          placeholder="e.g. 29-SEP-2026"
+          value={values.STOCK_MONTHLY_EXPIRY}
+          onChange={(e) => handleChange('STOCK_MONTHLY_EXPIRY', e.target.value.toUpperCase())}
+          disabled={disabled}
+          className={errors.STOCK_MONTHLY_EXPIRY ? 'border-red-500' : ''}
+        />
+        <p className="text-xs text-muted-foreground">
+          Monthly expiry date for stock options. Leave empty for index weekly expiry.
+        </p>
+        {errors.STOCK_MONTHLY_EXPIRY && (
+          <p className="text-sm text-red-500">{errors.STOCK_MONTHLY_EXPIRY}</p>
+        )}
+      </div>
+
       {/* Lots */}
       <div className="space-y-2">
         <Label htmlFor="strategy-lots">Lots</Label>

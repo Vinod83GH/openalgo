@@ -127,8 +127,18 @@ TRAIL_GAP = float(os.getenv("STRATEGY_TRAIL_GAP", "5"))  # Trailing SL: points b
 
 # Derived
 STRATEGY_NAME = f"TC5minCandle-{SYMBOL}"
-SPOT_EXCHANGE = os.getenv("STRATEGY_SPOT_EXCHANGE", "NSE_INDEX")  # Spot exchange for quotes/history (default NSE_INDEX for indices)
-STOCK_MONTHLY_EXPIRY = os.getenv("STOCK_MONTHLY_EXPIRY", "250826")
+SPOT_EXCHANGE = os.getenv("STRATEGY_SPOT_EXCHANGE", "NSE")  # Spot exchange for quotes/history (default NSE_INDEX for indices)
+# Expiry date from env (DD-MMM-YYYY format, e.g. "29-SEP-2026"), convert to DDMMMYY for API
+_raw_expiry = os.getenv("STOCK_MONTHLY_EXPIRY", "")
+if _raw_expiry:
+    try:
+        _parsed = datetime.strptime(_raw_expiry, "%d-%b-%Y")
+        STOCK_MONTHLY_EXPIRY = _parsed.strftime("%d%b%y").upper()
+    except ValueError:
+        # Fallback: if already in DDMMMYY format or unknown, use as-is
+        STOCK_MONTHLY_EXPIRY = _raw_expiry.upper()
+else:
+    STOCK_MONTHLY_EXPIRY = ""
 
 # Candle interval
 CANDLE_INTERVAL = "5m"
@@ -499,6 +509,7 @@ def place_entry(option_type):
         log(f"  Option Premium: ₹{option_ltp}")
 
     # Determine order type from config
+    price = None
     if ORDER_TYPE == "MARKET":
         price_type = "MARKET"
     elif option_ltp:
@@ -506,6 +517,7 @@ def place_entry(option_type):
         price = option_ltp
     else:
         log(f"  ⚠️ LIMIT requested but no LTP available, falling back to MARKET")
+        price_type = "MARKET"
 
     log(f"")
     log(f"🚀 ENTRY: BUY {option_symbol} | Qty={actual_quantity} ({LOTS} lots × {lotsize}) | {price_type} @ {price if price else 'MKT'}")
