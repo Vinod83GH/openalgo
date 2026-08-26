@@ -124,6 +124,8 @@ RETRACEMENT_BUFFER = float(os.getenv("STRATEGY_RETRACEMENT_BUFFER", "2"))
 MAX_LOSS_PCT = float(os.getenv("STRATEGY_MAX_LOSS_PCT", "10"))  # Max loss % on option premium before forced exit. 0 = disabled.
 MAX_FLIP_ENTRIES = int(os.getenv("STRATEGY_MAX_FLIP_ENTRIES", "3"))  # Max flip re-entries after SL hit (default: 3)
 TRAIL_GAP = float(os.getenv("STRATEGY_TRAIL_GAP", "5"))  # Trailing SL: points below high watermark after target hit. 0 = disabled (exit at target).
+EXTENDED_BUY_PRICE = 0.10
+EXTENDED_SELL_PRICE = -0.10
 
 # Derived
 STRATEGY_NAME = f"TC5minCandle-{SYMBOL}"
@@ -505,16 +507,17 @@ def place_entry(option_type):
     actual_quantity = LOTS * lotsize
 
     option_ltp = get_option_ltp(option_symbol, option_exchange)
-    if option_ltp:
-        log(f"  Option Premium: ₹{option_ltp}")
+    option_ltp_extended = option_ltp + EXTENDED_BUY_PRICE
+    if option_ltp_extended:
+        log(f"  Option Premium: ₹{option_ltp_extended}")
 
     # Determine order type from config
     price = None
     if ORDER_TYPE == "MARKET":
         price_type = "MARKET"
-    elif option_ltp:
+    elif option_ltp_extended:
         price_type = "LIMIT"
-        price = option_ltp
+        price = option_ltp_extended
     else:
         log(f"  ⚠️ LIMIT requested but no LTP available, falling back to MARKET")
         price_type = "MARKET"
@@ -544,6 +547,20 @@ def place_entry(option_type):
         if not isinstance(response, dict) or response.get("status") != "success":
             log(f"  ❌ Order placement FAILED. Not marking entry_done.")
             return False
+
+        # For LIMIT orders, monitor until filled (keep updating price to latest LTP)
+        if price_type == "LIMIT":
+            order_id = response.get("orderid")
+            if order_id:
+                filled = monitor_limit_order(
+                    order_id=order_id,
+                    symbol=option_symbol,
+                    exchange=option_exchange,
+                    action="BUY",
+                    quantity=actual_quantity,
+                )
+                if not filled:
+                    log(f"  ⚠️ Entry LIMIT order may not have filled completely.")
 
         entry_done = True
         entry_option_price_saved = option_ltp
@@ -585,6 +602,99 @@ def place_entry(option_type):
         return False
 
 
+def monitor_limit_order(order_id, symbol, exchange, action, quantity, max_retries=100, poll_interval=5):
+    """Monitor a LIMIT order and keep updating its price until filled.
+
+    Polls order status every `poll_interval` seconds. If the order is still
+    open/pending, fetches the latest LTP for the option and modifies the order
+    price to the current market price. Stops once the order is completed,
+    cancelled, or rejected, or after `max_retries` attempts.
+
+    Returns True if order was filled, False otherwise.
+    """
+    log(f"  📡 Monitoring limit order {order_id} (polling every {poll_interval}s, max {max_retries} retries)...")
+
+    for attempt in range(1, max_retries + 1):
+        time.sleep(poll_interval)
+
+        # Check order status
+        try:
+            url = f"{HOST}/api/v1/orderstatus"
+            payload = {
+                "apikey": API_KEY,
+                "strategy": STRATEGY_NAME,
+                "orderid": order_id,
+            }
+            resp = requests.post(url, json=payload, timeout=10)
+            data = resp.json()
+
+            if data.get("status") == "success":
+                order_status = data.get("order_status", "").lower()
+            else:
+                log(f"    [{attempt}] Status check failed: {data.get('message', 'unknown')}")
+                continue
+        except Exception as e:
+            log(f"    [{attempt}] Status check error: {e}")
+            continue
+
+        # If completed/filled, we're done
+        if order_status in ("complete", "completed", "filled"):
+            log(f"    ✅ Order {order_id} FILLED (attempt {attempt})")
+            return True
+
+        # If cancelled or rejected, stop monitoring
+        if order_status in ("cancelled", "rejected", "canceled"):
+            log(f"    ❌ Order {order_id} {order_status.upper()} — stop monitoring")
+            return False
+
+        # Still open/pending — get latest LTP and modify
+        if order_status in ("open", "pending", "trigger_pending", "after market order req received"):
+            new_ltp = get_option_ltp(symbol, exchange)
+            extended_ltp = new_ltp
+            
+            if action == "BUY":
+                extended_ltp = new_ltp + EXTENDED_BUY_PRICE
+            else:
+                extended_ltp = new_ltp + EXTENDED_SELL_PRICE
+
+            if not extended_ltp:
+                log(f"    [{attempt}] Could not get LTP for price update, retrying...")
+                continue
+
+            log(f"    [{attempt}] Order still {order_status}, updating price to ₹{extended_ltp}...")
+
+            try:
+                modify_url = f"{HOST}/api/v1/modifyorder"
+                modify_payload = {
+                    "apikey": API_KEY,
+                    "strategy": STRATEGY_NAME,
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "orderid": order_id,
+                    "action": action,
+                    "product": PRODUCT,
+                    "pricetype": "LIMIT",
+                    "price": extended_ltp,
+                    "quantity": quantity,
+                    "disclosed_quantity": 0,
+                    "trigger_price": 0,
+                }
+                mod_resp = requests.post(modify_url, json=modify_payload, timeout=10)
+                mod_data = mod_resp.json()
+
+                if mod_data.get("status") == "success":
+                    log(f"    [{attempt}] ✅ Price modified to ₹{new_ltp}")
+                else:
+                    log(f"    [{attempt}] ⚠️ Modify failed: {mod_data.get('message', 'unknown')}")
+            except Exception as e:
+                log(f"    [{attempt}] Modify error: {e}")
+        else:
+            log(f"    [{attempt}] Unexpected status: '{order_status}', continuing...")
+
+    log(f"  ⚠️ Max retries ({max_retries}) reached for order {order_id}. Order may still be pending.")
+    return False
+
+
 def place_exit(reason=""):
     """Exit the position."""
     global exit_done
@@ -597,7 +707,7 @@ def place_exit(reason=""):
         price_type = "MARKET"
     elif option_ltp:
         price_type = "LIMIT"
-        price = option_ltp
+        price = option_ltp + EXTENDED_SELL_PRICE
     else:
         log(f"  ⚠️ LIMIT requested but no LTP available for exit, falling back to MARKET")
         price_type = "MARKET"
@@ -627,6 +737,20 @@ def place_exit(reason=""):
         if not isinstance(response, dict) or response.get("status") != "success":
             log(f"  ❌ Exit Order FAILED. Not marking exit_done.")
             return False
+
+        # For LIMIT orders, monitor until filled (keep updating price to latest LTP)
+        if price_type == "LIMIT":
+            order_id = response.get("orderid")
+            if order_id:
+                filled = monitor_limit_order(
+                    order_id=order_id,
+                    symbol=option_symbol,
+                    exchange=option_exchange,
+                    action="SELL",
+                    quantity=actual_quantity,
+                )
+                if not filled:
+                    log(f"  ⚠️ Exit LIMIT order may not have filled completely.")
 
         exit_done = True
 
