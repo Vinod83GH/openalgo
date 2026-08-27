@@ -629,7 +629,8 @@ def monitor_limit_order(order_id, symbol, exchange, action, quantity, max_retrie
             data = resp.json()
 
             if data.get("status") == "success":
-                order_status = data.get("order_status", "").lower()
+                order_data = data.get("data", {})
+                order_status = order_data.get("order_status", "").lower() if isinstance(order_data, dict) else ""
             else:
                 log(f"    [{attempt}] Status check failed: {data.get('message', 'unknown')}")
                 continue
@@ -648,20 +649,18 @@ def monitor_limit_order(order_id, symbol, exchange, action, quantity, max_retrie
             return False
 
         # Still open/pending — get latest LTP and modify
-        if order_status in ("open", "pending", "trigger_pending", "after market order req received"):
+        if order_status in ("open", "pending", "trigger_pending", "after market order req received", ""):
             new_ltp = get_option_ltp(symbol, exchange)
-            extended_ltp = new_ltp
-            
+            if not new_ltp:
+                log(f"    [{attempt}] Could not get LTP for price update, retrying...")
+                continue
+
             if action == "BUY":
                 extended_ltp = new_ltp + EXTENDED_BUY_PRICE
             else:
                 extended_ltp = new_ltp + EXTENDED_SELL_PRICE
 
-            if not extended_ltp:
-                log(f"    [{attempt}] Could not get LTP for price update, retrying...")
-                continue
-
-            log(f"    [{attempt}] Order still {order_status}, updating price to ₹{extended_ltp}...")
+            log(f"    [{attempt}] Order still {order_status or 'open'}, updating price to ₹{extended_ltp}...")
 
             try:
                 modify_url = f"{HOST}/api/v1/modifyorder"
@@ -688,8 +687,6 @@ def monitor_limit_order(order_id, symbol, exchange, action, quantity, max_retrie
                     log(f"    [{attempt}] ⚠️ Modify failed: {mod_data.get('message', 'unknown')}")
             except Exception as e:
                 log(f"    [{attempt}] Modify error: {e}")
-        else:
-            log(f"    [{attempt}] Unexpected status: '{order_status}', continuing...")
 
     log(f"  ⚠️ Max retries ({max_retries}) reached for order {order_id}. Order may still be pending.")
     return False
